@@ -71,14 +71,17 @@ export async function getCinemaosToken(
 
   // Pick a random debugging port to avoid collision
   const port = 9300 + Math.floor(Math.random() * 400);
-  const tempUserDir = join(os.tmpdir(), `cinemaos_cdp_${Date.now()}_${Math.random().toString(36).substring(7)}`);
+  const userProfileDir = join(os.homedir(), '.cinemaos-chrome-profile');
   const targetUrl = `https://cinemaos.live/watch/${type}/${idStr}`;
 
   const chrome = spawn(chromePath, [
-    `--user-data-dir=${tempUserDir}`,
+    `--user-data-dir=${userProfileDir}`,
     `--remote-debugging-port=${port}`,
     '--no-first-run',
     '--no-default-browser-check',
+    '--disable-fre',
+    '--disable-search-engine-choice-screen',
+    '--password-store=basic',
     '--window-position=-3200,-3200',
     '--window-size=800,600',
     'about:blank',

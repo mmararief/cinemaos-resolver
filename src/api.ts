@@ -3,6 +3,7 @@
 import http from 'node:http';
 import { URL } from 'node:url';
 import { CinemaosClient, KNOWN_CINEMAOS_TOKENS } from './client.js';
+import { searchMediaByTitle } from './search.js';
 import type { CinemaosResolutionResult, ContentType } from './types.js';
 
 export interface ApiServerOptions {
@@ -62,6 +63,7 @@ export function createApiServer(options: ApiServerOptions = {}) {
           version: '1.0.0',
           endpoints: {
             health: `${serverOrigin}/health`,
+            search: `${serverOrigin}/api/search?q=Fight+Club`,
             resolve: `${serverOrigin}/api/resolve?type=tv&id=213375&s=1&e=1`,
             scrape: `${serverOrigin}/api/scrape?type=movie&id=550`,
             metadata: `${serverOrigin}/api/metadata?type=tv&id=213375`,
@@ -71,13 +73,49 @@ export function createApiServer(options: ApiServerOptions = {}) {
         return;
       }
 
-      // 3. Resolve metadata
+      // 3. Search Movies & TV series by title (/api/search)
+      if (pathname === '/api/search') {
+        const query =
+          requestUrl.searchParams.get('q') ||
+          requestUrl.searchParams.get('query') ||
+          requestUrl.searchParams.get('title');
+        const filterType = (requestUrl.searchParams.get('type') as 'movie' | 'tv') || undefined;
+
+        if (!query) {
+          sendJson(res, 400, {
+            error: 'Missing required query parameter "q" (Title to search)',
+            example: `${serverOrigin}/api/search?q=Breaking+Bad`,
+          });
+          return;
+        }
+
+        const results = await searchMediaByTitle(query, filterType);
+        sendJson(res, 200, {
+          success: true,
+          query,
+          count: results.length,
+          results,
+        });
+        return;
+      }
+
+      // 4. Resolve metadata
       if (pathname === '/api/metadata') {
         const type = (requestUrl.searchParams.get('type') as ContentType) || 'movie';
-        const id = requestUrl.searchParams.get('id') || requestUrl.searchParams.get('tmdbId');
+        let id = requestUrl.searchParams.get('id') || requestUrl.searchParams.get('tmdbId');
+
+        if (!id || isNaN(Number(id))) {
+          const query = id || requestUrl.searchParams.get('q') || requestUrl.searchParams.get('title');
+          if (query) {
+            const matches = await searchMediaByTitle(query, type);
+            if (matches.length > 0) {
+              id = String(matches[0].id);
+            }
+          }
+        }
 
         if (!id) {
-          sendJson(res, 400, { error: 'Missing required query parameter "id" or "tmdbId"' });
+          sendJson(res, 400, { error: 'Missing required query parameter "id" or title to search' });
           return;
         }
 
@@ -86,27 +124,46 @@ export function createApiServer(options: ApiServerOptions = {}) {
         return;
       }
 
-      // 4. Resolve Stream & Subtitles (/api/resolve or /api/scrape)
+      // 5. Resolve Stream & Subtitles (/api/resolve or /api/scrape)
       if (pathname === '/api/resolve' || pathname === '/api/scrape') {
-        const id =
+        let id =
           requestUrl.searchParams.get('id') ||
           requestUrl.searchParams.get('tmdbId') ||
           requestUrl.searchParams.get('tmdb');
-
-        if (!id) {
-          sendJson(res, 400, {
-            error: 'Missing required parameter "id" (TMDB ID)',
-            example: `${serverOrigin}/api/resolve?type=tv&id=213375&s=1&e=1`,
-          });
-          return;
-        }
 
         const rawType = requestUrl.searchParams.get('type');
         const sParam = requestUrl.searchParams.get('s') || requestUrl.searchParams.get('season');
         const eParam = requestUrl.searchParams.get('e') || requestUrl.searchParams.get('episode');
 
         // Automatically infer TV if season/episode provided
-        const type: ContentType =
+        let type: ContentType =
+          rawType === 'tv' || rawType === 'movie'
+            ? rawType
+            : (sParam || eParam ? 'tv' : 'movie');
+
+        const titleParam = requestUrl.searchParams.get('t') || requestUrl.searchParams.get('title');
+
+        // Search by title if id is not numeric or missing
+        if (!id || isNaN(Number(id))) {
+          const query = id || titleParam || requestUrl.searchParams.get('q');
+          if (query) {
+            const matches = await searchMediaByTitle(query, rawType === 'tv' || rawType === 'movie' ? rawType : undefined);
+            if (matches.length > 0) {
+              id = String(matches[0].id);
+              if (!rawType) {
+                type = matches[0].type;
+              }
+            }
+          }
+        }
+
+        if (!id) {
+          sendJson(res, 400, {
+            error: 'Missing required parameter "id" (TMDB ID or Title to search)',
+            example: `${serverOrigin}/api/resolve?title=Breaking+Bad&s=1&e=1`,
+          });
+          return;
+        }
           rawType === 'tv' || rawType === 'movie'
             ? rawType
             : (sParam || eParam ? 'tv' : 'movie');

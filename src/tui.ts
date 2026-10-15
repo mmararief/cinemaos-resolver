@@ -4,6 +4,7 @@ import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import open from 'open';
 import { CinemaosClient } from './client.js';
+import { searchMediaByTitle, type SearchResultItem } from './search.js';
 import type { ContentType } from './types.js';
 
 async function main() {
@@ -12,37 +13,63 @@ async function main() {
 
   const client = new CinemaosClient();
 
-  const type = (await p.select({
-    message: 'What would you like to watch?',
-    options: [
-      { value: 'tv', label: '📺 TV Series', hint: 'e.g. VisionQuest, House of the Dragon' },
-      { value: 'movie', label: '🍿 Movie', hint: 'e.g. Fight Club, Inception' },
-    ],
-  })) as ContentType;
+  let selectedItem: SearchResultItem | null = null;
 
-  if (p.isCancel(type)) {
-    p.cancel('Operation cancelled.');
-    process.exit(0);
+  while (!selectedItem) {
+    const query = await p.text({
+      message: 'Enter Movie or TV Show Title:',
+      placeholder: 'e.g. Fight Club, Breaking Bad, Inception, Avatar',
+      validate: (val) => {
+        if (!val || val.trim().length === 0) return 'Please enter a title to search';
+      },
+    });
+
+    if (p.isCancel(query)) {
+      p.cancel('Operation cancelled.');
+      process.exit(0);
+    }
+
+    const s = p.spinner();
+    s.start(pc.cyan(`Searching TMDB for "${query}"...`));
+    const results = await searchMediaByTitle(String(query).trim());
+    s.stop(pc.green(`Found ${results.length} result(s)`));
+
+    if (results.length === 0) {
+      p.note(pc.yellow(`No movies or TV shows found matching "${query}". Try again.`));
+      continue;
+    }
+
+    const choices = [
+      ...results.map((item) => ({
+        value: item,
+        label: `${item.type === 'tv' ? '📺' : '🍿'} ${item.title} (${item.year || 'N/A'})${
+          item.rating ? pc.yellow(` ★ ${item.rating}`) : ''
+        }`,
+        hint: item.overview ? item.overview.slice(0, 65) + '...' : undefined,
+      })),
+      {
+        value: 'retry' as any,
+        label: '🔍 Search for a different title',
+      },
+    ];
+
+    const pick = await p.select({
+      message: 'Select title to resolve:',
+      options: choices,
+    });
+
+    if (p.isCancel(pick)) {
+      p.cancel('Operation cancelled.');
+      process.exit(0);
+    }
+
+    if (pick !== 'retry') {
+      selectedItem = pick as SearchResultItem;
+    }
   }
 
-  const defaultId = type === 'tv' ? '213375' : '550';
-  const defaultLabel = type === 'tv' ? 'VisionQuest (213375)' : 'Fight Club (550)';
-
-  const idInput = await p.text({
-    message: `Enter TMDB ID:`,
-    placeholder: defaultId,
-    initialValue: defaultId,
-    validate: (val) => {
-      if (!val || isNaN(Number(val))) return 'Please enter a valid numeric TMDB ID';
-    },
-  });
-
-  if (p.isCancel(idInput)) {
-    p.cancel('Operation cancelled.');
-    process.exit(0);
-  }
-
-  const tmdbId = String(idInput).trim();
+  const type: ContentType = selectedItem.type;
+  const tmdbId = String(selectedItem.id);
   let season = 1;
   let episode = 1;
 
@@ -71,7 +98,7 @@ async function main() {
   }
 
   const s = p.spinner();
-  s.start(pc.cyan('Decrypting payloads and querying CinemaOS relay scrapers...'));
+  s.start(pc.cyan(`Resolving streams for "${selectedItem.title}"...`));
 
   const result = await client.resolve({
     type,
@@ -84,7 +111,7 @@ async function main() {
 
   if (!result.success || result.sources.length === 0) {
     p.note(
-      result.error || 'Could not find active streams for this title.',
+      result.error || 'Could not find active streams for this title on CinemaOS.',
       pc.red('No Streams Found')
     );
     p.outro(pc.yellow('Exiting.'));
@@ -98,85 +125,87 @@ async function main() {
     pc.green('✔ Resolved Successfully')
   );
 
-  const streamOptions = result.sources.map((src, index) => {
-    return {
-      value: src.url,
-      label: `${src.quality || '1080p'} [${src.type.toUpperCase()}] - ${src.label}`,
-      hint: `${src.scraper.toUpperCase()} / ${src.server}`,
-    };
-  });
-
-  streamOptions.push({
-    value: 'EXIT',
-    label: '❌ Exit',
-    hint: 'Close explorer',
-  });
-
-  const selectedStream = await p.select({
-    message: 'Select a stream:',
-    options: streamOptions,
-  });
-
-  if (p.isCancel(selectedStream) || selectedStream === 'EXIT') {
-    p.outro('Goodbye!');
-    process.exit(0);
-  }
-
-  const streamUrl = String(selectedStream);
-
-  const indoSub = result.subtitles.find((s) => s.isIndonesian);
-  if (indoSub) {
+  // Subtitle preview
+  const indoSubs = result.subtitles.filter((sub) => sub.isIndonesian);
+  if (indoSubs.length > 0) {
     p.log.success(
-      pc.bold(pc.green(`🇮🇩 Indonesian Subtitle detected: `)) + pc.cyan(indoSub.file)
+      `Found ${pc.bold(indoSubs.length)} Indonesian subtitle(s): ${pc.cyan(
+        indoSubs.map((s) => s.label).join(', ')
+      )}`
     );
   }
 
-  let continueLoop = true;
-  while (continueLoop) {
-    const action = await p.select({
-      message: 'What do you want to do?',
-      options: [
-        { value: 'open', label: '🌐 Open Stream in Browser / Player', hint: 'Launch stream URL directly' },
-        { value: 'copy', label: '📋 Display Stream URL for copying', hint: 'Print stream link' },
-        ...(result.subtitles.length > 0
-          ? [{ value: 'subs', label: `💬 Browse Subtitles (${result.subtitles.length} available)`, hint: 'View subtitle files' }]
-          : []),
-        { value: 'exit', label: '❌ Exit', hint: 'Finish session' },
-      ],
-    });
+  // Interactive Stream Action
+  const streamOptions = result.sources.map((src, i) => {
+    const is4k = src.quality?.includes('2160') || src.quality?.includes('4K');
+    const badge = is4k ? pc.bgMagenta(' 4K ') : pc.bgBlue(` ${src.quality || '1080p'} `);
+    const typeBadge = src.type === 'mpd' ? pc.bgYellow(pc.black(' DASH ')) : pc.bgGreen(pc.black(' HLS '));
+    return {
+      value: src,
+      label: `[${i + 1}] ${badge} ${typeBadge} ${src.label}`,
+      hint: `${src.scraper.toUpperCase()} • ${src.server}`,
+    };
+  });
 
-    if (p.isCancel(action) || action === 'exit') {
-      break;
-    }
+  const selectedStream: any = await p.select({
+    message: 'Select a stream server to inspect or play:',
+    options: [
+      ...streamOptions,
+      { value: 'subtitles', label: '💬 View all available subtitle tracks' },
+      { value: 'exit', label: '❌ Exit' },
+    ] as any,
+  });
 
-    if (action === 'open') {
-      p.log.info(`Opening stream in default application: ${pc.cyan(streamUrl)}`);
-      await open(streamUrl);
-    } else if (action === 'copy') {
-      p.log.message(`\n${pc.bold('Stream URL:')}\n${pc.cyan(streamUrl)}\n`);
-    } else if (action === 'subs') {
-      const subChoice = await p.select({
-        message: 'Select a subtitle to view/copy:',
-        options: [
-          ...result.subtitles.map((sub) => ({
-            value: sub.file,
-            label: `${sub.isIndonesian ? '🇮🇩 ' : '🌐 '}[${sub.lang.toUpperCase()}] ${sub.label}`,
-            hint: sub.file.slice(0, 45) + '...',
-          })),
-          { value: 'BACK', label: '⬅ Back to Menu', hint: 'Return to actions' },
-        ],
-      });
-
-      if (!p.isCancel(subChoice) && subChoice !== 'BACK') {
-        p.log.message(`\n${pc.bold('Subtitle URL:')}\n${pc.cyan(String(subChoice))}\n`);
-      }
-    }
+  if (p.isCancel(selectedStream) || selectedStream === 'exit') {
+    p.outro(pc.yellow('Goodbye!'));
+    process.exit(0);
   }
 
-  p.outro(pc.green('Enjoy your stream! ✨'));
+  if (selectedStream === 'subtitles') {
+    console.clear();
+    p.intro(pc.bgBlue(pc.bold(` Subtitle Tracks for ${result.title} `)));
+    result.subtitles.forEach((sub, idx) => {
+      const tag = sub.isIndonesian
+        ? pc.bgRed(pc.white(' ID (Indo) '))
+        : pc.bgBlack(pc.white(` ${sub.lang.toUpperCase()} `));
+      console.log(`  [${idx + 1}] ${tag} ${pc.white(sub.label)}: ${pc.cyan(sub.file)}`);
+    });
+    p.outro(pc.green('Done listing subtitles.'));
+    return;
+  }
+
+  const action = await p.select({
+    message: `Stream selected: ${selectedStream.label}`,
+    options: [
+      { value: 'copy', label: '📋 Print direct stream URL to terminal' },
+      { value: 'browser', label: '🌐 Open proxy player in default browser' },
+      { value: 'vlc', label: '📺 Copy VLC network stream command' },
+      { value: 'exit', label: '❌ Cancel' },
+    ],
+  });
+
+  if (action === 'copy') {
+    console.log(pc.bold('\nStream URL:'));
+    console.log(pc.cyan(selectedStream.url));
+  } else if (action === 'browser') {
+    const playerUrl = `https://stream-player.pages.dev/?url=${encodeURIComponent(
+      selectedStream.url
+    )}`;
+    p.log.info(`Opening stream player: ${playerUrl}`);
+    await open(playerUrl);
+  } else if (action === 'vlc') {
+    console.log(pc.bold('\nVLC Command:'));
+    console.log(
+      pc.green(
+        `vlc --http-referrer="https://cinemaos.live/" "${selectedStream.url}"`
+      )
+    );
+  }
+
+  p.outro(pc.green('✨ Enjoy your stream!'));
 }
 
 main().catch((err) => {
-  console.error(pc.red('Fatal error:'), err);
+  p.outro(pc.red(`Error: ${err.message}`));
   process.exit(1);
 });
