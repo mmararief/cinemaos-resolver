@@ -132,7 +132,7 @@ export class CinemaosClient {
     }
 
     const scrapersToQuery = options.scrapers || DEFAULT_SCRAPERS;
-    const sources: CinemaosSource[] = [];
+    let sources: CinemaosSource[] = [];
     const subtitles: CinemaosSubtitle[] = [];
     const seenUrls = new Set<string>();
     let forbiddenCount = 0;
@@ -264,22 +264,94 @@ export class CinemaosClient {
 
     await Promise.allSettled(scrapersToQuery.map((s) => fetchScraper(s)));
 
-    // Prioritize 4K / 1080p FHD streams and direct HLS/MP4 before DASH
-    sources.sort((a, b) => {
+    // Fast concurrent probe to filter dead 502/404 streams and detect HEVC codecs
+    const validatedSources: CinemaosSource[] = [];
+    await Promise.allSettled(
+      sources.map(async (src) => {
+        try {
+          const probeHeaders: Record<string, string> = {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            Referer: 'https://cinemaos.live/',
+            Origin: 'https://cinemaos.live',
+            Range: 'bytes=0-1024',
+          };
+
+          const checkRes = await fetch(src.url, {
+            method: 'GET',
+            headers: probeHeaders,
+            signal: AbortSignal.timeout(2500),
+          });
+
+          // Drop dead / bad gateway responses
+          if (!checkRes.ok && checkRes.status !== 206) {
+            return;
+          }
+
+          // For binary MP4 files, do not buffer whole file
+          if (src.type === 'mp4') {
+            try { checkRes.body?.cancel(); } catch {}
+            validatedSources.push(src);
+            return;
+          }
+
+          // For manifests (M3U8 / MPD), read first chunk safely
+          let headSnippet = '';
+          if (checkRes.body) {
+            const reader = checkRes.body.getReader();
+            const { value } = await reader.read();
+            if (value) {
+              headSnippet = new TextDecoder().decode(value);
+            }
+            try { reader.cancel(); } catch {}
+          }
+
+          if (
+            headSnippet.includes('502 Bad Gateway') ||
+            headSnippet.includes('Error 502') ||
+            headSnippet.includes('504 Gateway') ||
+            headSnippet.includes('404 Not Found')
+          ) {
+            return;
+          }
+
+          // Detect HEVC/H.265 in DASH manifests
+          if (src.type === 'mpd' && (headSnippet.includes('hev1') || headSnippet.includes('hvc1'))) {
+            src.quality = `${src.quality} (HEVC)`;
+            (src as any).isHevc = true;
+          }
+
+          validatedSources.push(src);
+        } catch {
+          // If probe timed out, retain original if needed
+        }
+      })
+    );
+
+    const activeSources = validatedSources.length > 0 ? validatedSources : sources;
+
+    // Prioritize universal HLS (H.264) & 4K/1080p, while deprioritizing HEVC DASH
+    activeSources.sort((a, b) => {
       const getScore = (s: any) => {
         let score = 0;
-        if (s.quality.includes('4K') || s.quality.includes('2160')) score += 50;
-        else if (s.quality.includes('1080') || s.quality.includes('FHD')) score += 40;
-        else if (s.quality.includes('720')) score += 30;
-        else if (s.quality.includes('480')) score += 20;
-        else score += 10;
+        // Universal HLS runs in all browsers natively with hls.js
+        if (s.type === 'hls') score += 100;
+        else if (s.type === 'mp4') score += 70;
+        else if (s.type === 'mpd') {
+          score += s.isHevc ? 10 : 50;
+        }
 
-        if (s.type === 'hls') score += 5;
-        else if (s.type === 'mp4') score += 4;
+        if (s.quality.includes('4K') || s.quality.includes('2160')) score += 40;
+        else if (s.quality.includes('1080') || s.quality.includes('FHD')) score += 30;
+        else if (s.quality.includes('720')) score += 20;
+        else if (s.quality.includes('480')) score += 10;
+
         return score;
       };
       return getScore(b) - getScore(a);
     });
+
+    sources = activeSources;
 
     let error: string | undefined;
     if (sources.length === 0) {
