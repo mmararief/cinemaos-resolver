@@ -139,7 +139,12 @@ async function main() {
   const streamOptions = result.sources.map((src, i) => {
     const is4k = src.quality?.includes('2160') || src.quality?.includes('4K');
     const badge = is4k ? pc.bgMagenta(' 4K ') : pc.bgBlue(` ${src.quality || '1080p'} `);
-    const typeBadge = src.type === 'mpd' ? pc.bgYellow(pc.black(' DASH ')) : pc.bgGreen(pc.black(' HLS '));
+    const typeBadge =
+      src.type === 'mpd'
+        ? pc.bgYellow(pc.black(' DASH '))
+        : src.type === 'mp4'
+        ? pc.bgMagenta(pc.black(' MP4 '))
+        : pc.bgGreen(pc.black(' HLS '));
     const audioBadge = src.audio ? pc.bgCyan(pc.black(` 🔊 ${src.audio} `)) : '';
     return {
       value: src,

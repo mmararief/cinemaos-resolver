@@ -44,7 +44,7 @@ export interface CinemaosSource {
   label: string;
   url: string;
   quality: string;
-  type: 'hls' | 'mpd';
+  type: 'hls' | 'mpd' | 'mp4';
   server: string;
   scraper: string;
   audio?: string;

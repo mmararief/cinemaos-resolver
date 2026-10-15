@@ -172,7 +172,11 @@ async function main() {
     const is4k = src.quality?.includes('2160') || src.quality?.includes('4K');
     const badge = is4k ? pc.bgMagenta(' 4K UHD ') : pc.bgBlue(` ${src.quality || '1080p'} `);
     const typeBadge =
-      src.type === 'mpd' ? pc.bgYellow(pc.black(' DASH ')) : pc.bgGreen(pc.black(' HLS '));
+      src.type === 'mpd'
+        ? pc.bgYellow(pc.black(' DASH '))
+        : src.type === 'mp4'
+        ? pc.bgMagenta(pc.black(' MP4 '))
+        : pc.bgGreen(pc.black(' HLS '));
     const audioBadge = src.audio ? pc.bgCyan(pc.black(` 🔊 ${src.audio} `)) : '';
     console.log(`  ${pc.bold(pc.white(`[${idx + 1}]`))} ${badge} ${typeBadge} ${audioBadge} ${pc.bold(src.label)}`);
     console.log(`      ${pc.gray('URL:')} ${pc.cyan(src.url)}`);

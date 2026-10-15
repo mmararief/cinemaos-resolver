@@ -179,11 +179,29 @@ export class CinemaosClient {
 
         // Process streams
         for (const [srvKey, srvObj] of Object.entries(payload.sources)) {
-          if (!srvObj || !srvObj.url || seenUrls.has(srvObj.url)) continue;
-          seenUrls.add(srvObj.url);
+          if (!srvObj) continue;
 
-          const streamUrl = srvObj.url;
+          let streamUrl = srvObj.url;
+          let isMp4 = srvObj.type === 'mp4' || (streamUrl && streamUrl.endsWith('.mp4'));
+          let quality = srvObj.quality || srvObj.bitrate || '1080p';
+
+          // Extract MP4 direct links if stored in qualities map
+          if (!streamUrl && (srvObj as any).qualities) {
+            const quals = (srvObj as any).qualities;
+            const chosen =
+              quals['1080'] || quals['720'] || quals['480'] || quals['360'] || Object.values(quals)[0];
+            if (chosen && chosen.url) {
+              streamUrl = chosen.url;
+              isMp4 = true;
+              quality = chosen.quality || '1080p';
+            }
+          }
+
+          if (!streamUrl || seenUrls.has(streamUrl)) continue;
+          seenUrls.add(streamUrl);
+
           const isDash = srvObj.type === 'dash' || streamUrl.includes('.mpd');
+          const streamType: 'hls' | 'mpd' | 'mp4' = isDash ? 'mpd' : isMp4 ? 'mp4' : 'hls';
 
           // Parse audio language from server name (e.g. "Alpha - English", "Halo - 720p Hindi", "Tamil")
           let audio: string | undefined;
@@ -214,10 +232,10 @@ export class CinemaosClient {
 
           sources.push({
             source: `cinemaos-${scraperId}-${srvKey.toLowerCase().replace(/[^a-z0-9]/g, '')}`,
-            label: `CinemaOS VIP - ${payload.name || scraperId.toUpperCase()} (${srvKey} 1080p)`,
+            label: `CinemaOS VIP - ${payload.name || scraperId.toUpperCase()} (${srvKey} ${quality})`,
             url: streamUrl,
-            quality: srvObj.quality || srvObj.bitrate || '1080p',
-            type: isDash ? 'mpd' : 'hls',
+            quality,
+            type: streamType,
             server: srvKey,
             scraper: scraperId,
             audio,
