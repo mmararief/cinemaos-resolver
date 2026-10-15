@@ -3,4 +3,5 @@ dist
 .env
 .env.local
 *.log
+.tokens-cache.json
 .DS_Store

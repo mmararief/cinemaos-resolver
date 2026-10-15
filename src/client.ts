@@ -1,5 +1,6 @@
 import { Impit } from 'impit';
 import { generateContentHash, decryptPayload } from './crypto.js';
+import { getCinemaosToken } from './token-fetcher.js';
 import type {
   ContentType,
   ContentInfo,
@@ -89,10 +90,20 @@ export class CinemaosClient {
       ...(info.type === 'tv' ? { seasonId: seasonStr, episodeId: episodeStr } : {}),
     });
 
-    const token =
+    let token =
       options.token ||
-      KNOWN_CINEMAOS_TOKENS[tmdbIdStr] ||
-      KNOWN_CINEMAOS_TOKENS['213375'];
+      KNOWN_CINEMAOS_TOKENS[tmdbIdStr];
+
+    if (!token) {
+      const autoToken = await getCinemaosToken(info.type, tmdbIdStr);
+      if (autoToken) {
+        token = autoToken;
+      }
+    }
+
+    if (!token) {
+      token = KNOWN_CINEMAOS_TOKENS['213375'];
+    }
 
     if (!token) {
       return {

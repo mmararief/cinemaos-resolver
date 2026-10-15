@@ -1,6 +1,7 @@
 export { CinemaosClient, KNOWN_CINEMAOS_TOKENS, DEFAULT_SCRAPERS } from './client.js';
 export * from './types.js';
 export * from './crypto.js';
+export * from './token-fetcher.js';
 
 import { CinemaosClient } from './client.js';
 

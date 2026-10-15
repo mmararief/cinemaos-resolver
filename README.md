@@ -13,7 +13,7 @@ High-performance video stream and subtitle extractor for **CinemaOS** (`cinemaos
 - ⚡ **Multi-Mirror Parallel Extraction**: Scrapes Movy (Altair, Sirius 4K, Spica), Vidapi (Helios, Selene direct master HLS), Vidfast (MiamiC 1080p), and Vidstuck (DASH MPD).
 - 🔐 **Dual-HMAC SHA-256 Authentication**: Accurately computes content hashes to bypass CinemaOS anti-tamper security.
 - 🛡️ **AES-256-GCM Payload Decryption**: Seamlessly derives cryptographic keys via PBKDF2 (100,000 iterations) to decode encrypted relay payloads.
-- 🇮🇩 **Full Indonesian Subtitle Support**: Automatically parses and tags Indonesian (`id`/`in`) SRT/VTT subtitles alongside international tracks.
+- 🤖 **Automatic Token Fetching & Caching**: Automatically resolves and caches dynamic CinemaOS session tokens (`_st`) in the background via stealth browser CDP without any manual token copying.
 - 💻 **Multiple Interfaces**: Use it as a **TypeScript / JavaScript library**, an **Interactive Terminal UI (TUI)**, a **CLI tool**, or a standalone **REST API microservice**.
 
 ---
