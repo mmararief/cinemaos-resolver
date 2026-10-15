@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import os from 'node:os';
 
-const CACHE_FILE = join(process.cwd(), '.tokens-cache.json');
+const CACHE_FILE = join(os.homedir(), '.cinemaos-tokens-cache.json');
 
 const CANDIDATE_CHROME_PATHS = [
   // Windows
