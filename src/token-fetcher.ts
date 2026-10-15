@@ -102,7 +102,7 @@ export async function getCinemaosToken(
     const timer = setTimeout(() => {
       cleanup();
       resolve(null);
-    }, 12000);
+    }, 22000);
 
     try {
       // Connect to CDP

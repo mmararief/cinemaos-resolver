@@ -15,7 +15,18 @@ export const KNOWN_CINEMAOS_TOKENS: Record<string, string> = {
   '213375': '1792109554.07f4a70c1051d8d501a7a40796a9a28569f579939eaec01ed110430d4b3e3a94',
 };
 
-export const DEFAULT_SCRAPERS = ['mv', 'va', 'vf', 'vs'];
+export const DEFAULT_SCRAPERS = [
+  'z2',
+  'mb2',
+  'ntm',
+  'q4',
+  'vn',
+  's3',
+  'mv',
+  'va',
+  'vf',
+  'vs',
+];
 
 export class CinemaosClient {
   private client: Impit;
