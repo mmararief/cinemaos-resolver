@@ -140,9 +140,10 @@ async function main() {
     const is4k = src.quality?.includes('2160') || src.quality?.includes('4K');
     const badge = is4k ? pc.bgMagenta(' 4K ') : pc.bgBlue(` ${src.quality || '1080p'} `);
     const typeBadge = src.type === 'mpd' ? pc.bgYellow(pc.black(' DASH ')) : pc.bgGreen(pc.black(' HLS '));
+    const audioBadge = src.audio ? pc.bgCyan(pc.black(` 🔊 ${src.audio} `)) : '';
     return {
       value: src,
-      label: `[${i + 1}] ${badge} ${typeBadge} ${src.label}`,
+      label: `[${i + 1}] ${badge} ${typeBadge} ${audioBadge} ${src.label}`,
       hint: `${src.scraper.toUpperCase()} • ${src.server}`,
     };
   });

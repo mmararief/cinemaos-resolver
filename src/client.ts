@@ -185,6 +185,33 @@ export class CinemaosClient {
           const streamUrl = srvObj.url;
           const isDash = srvObj.type === 'dash' || streamUrl.includes('.mpd');
 
+          // Parse audio language from server name (e.g. "Alpha - English", "Halo - 720p Hindi", "Tamil")
+          let audio: string | undefined;
+          const knownLangs = [
+            'English',
+            'Hindi',
+            'Portuguese',
+            'Spanish',
+            'Tamil',
+            'Telugu',
+            'French',
+            'German',
+            'Italian',
+            'Japanese',
+            'Korean',
+            'Indonesian',
+            'Russian',
+            'Mandarin',
+            'Chinese',
+            'Arabic',
+          ];
+          for (const lang of knownLangs) {
+            if (new RegExp(`\\b${lang}\\b`, 'i').test(srvKey)) {
+              audio = lang;
+              break;
+            }
+          }
+
           sources.push({
             source: `cinemaos-${scraperId}-${srvKey.toLowerCase().replace(/[^a-z0-9]/g, '')}`,
             label: `CinemaOS VIP - ${payload.name || scraperId.toUpperCase()} (${srvKey} 1080p)`,
@@ -193,6 +220,7 @@ export class CinemaosClient {
             type: isDash ? 'mpd' : 'hls',
             server: srvKey,
             scraper: scraperId,
+            audio,
           });
         }
 

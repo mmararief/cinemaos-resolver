@@ -47,6 +47,7 @@ export interface CinemaosSource {
   type: 'hls' | 'mpd';
   server: string;
   scraper: string;
+  audio?: string;
 }
 
 export interface CinemaosSubtitle {
