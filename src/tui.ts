@@ -4,6 +4,7 @@ import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import open from 'open';
 import { CinemaosClient } from './client.js';
+import { createApiServer } from './api.js';
 import { searchMediaByTitle, type SearchResultItem } from './search.js';
 import type { ContentType } from './types.js';
 
@@ -194,16 +195,23 @@ async function main() {
     console.log(pc.bold('\nStream URL:'));
     console.log(pc.cyan(selectedStream.url));
   } else if (action === 'browser') {
-    const playerUrl = `https://stream-player.pages.dev/?url=${encodeURIComponent(
-      selectedStream.url
-    )}`;
-    p.log.info(`Opening stream player: ${playerUrl}`);
+    // Start local proxy & player server if not running
+    try {
+      createApiServer({ port: 3003 }).start();
+    } catch {}
+
+    const playerUrl = `http://localhost:3003/player?id=${tmdbId}&type=${type}&title=${encodeURIComponent(
+      result.title
+    )}${type === 'tv' ? `&s=${season}&e=${episode}` : ''}`;
+    p.log.success(`Opening local CinemaOS VIP Player: ${pc.cyan(playerUrl)}`);
     await open(playerUrl);
   } else if (action === 'vlc') {
-    console.log(pc.bold('\nVLC Command:'));
+    const firstSub = result.subtitles.find((s) => s.isIndonesian) || result.subtitles[0];
+    const subFlag = firstSub ? ` --sub-file="${firstSub.file}"` : '';
+    console.log(pc.bold('\nVLC Command (with headers & subtitle):'));
     console.log(
       pc.green(
-        `vlc --http-referrer="https://cinemaos.live/" "${selectedStream.url}"`
+        `vlc --http-referrer="https://cinemaos.live/" "${selectedStream.url}"${subFlag}`
       )
     );
   }

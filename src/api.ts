@@ -4,6 +4,7 @@ import http from 'node:http';
 import { URL } from 'node:url';
 import { CinemaosClient, KNOWN_CINEMAOS_TOKENS } from './client.js';
 import { searchMediaByTitle } from './search.js';
+import { renderPlayerHtml } from './player-html.js';
 import type { CinemaosResolutionResult, ContentType } from './types.js';
 
 export interface ApiServerOptions {
@@ -49,7 +50,112 @@ export function createApiServer(options: ApiServerOptions = {}) {
         return;
       }
 
-      // 2. Documentation / Web UI
+      // 2. Built-in Web Stream Player with Subtitles (/player)
+      if (pathname === '/player' || pathname === '/api/player') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(renderPlayerHtml(serverOrigin));
+        return;
+      }
+
+      // 2b. Stream & Subtitle Proxy (/api/proxy)
+      if (pathname === '/api/proxy') {
+        const targetUrl = requestUrl.searchParams.get('url');
+        if (!targetUrl) {
+          sendJson(res, 400, { error: 'Missing required query parameter "url"' });
+          return;
+        }
+
+        try {
+          const reqHeaders: Record<string, string> = {
+            Referer: 'https://cinemaos.live/',
+            Origin: 'https://cinemaos.live',
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          };
+          if (req.headers.range) {
+            reqHeaders.Range = req.headers.range;
+          }
+
+          const upstreamRes = await fetch(targetUrl, {
+            headers: reqHeaders,
+          });
+
+          const contentType = upstreamRes.headers.get('content-type') || 'application/octet-stream';
+          const headers: Record<string, string> = {
+            'Access-Control-Allow-Origin': '*',
+            'Content-Type': contentType,
+          };
+          if (upstreamRes.headers.get('content-range')) {
+            headers['Content-Range'] = upstreamRes.headers.get('content-range')!;
+          }
+          if (upstreamRes.headers.get('accept-ranges')) {
+            headers['Accept-Ranges'] = upstreamRes.headers.get('accept-ranges')!;
+          }
+          if (upstreamRes.headers.get('content-length')) {
+            headers['Content-Length'] = upstreamRes.headers.get('content-length')!;
+          }
+
+          // If M3U8 playlist, rewrite relative URLs
+          if (
+            contentType.includes('mpegurl') ||
+            targetUrl.includes('.m3u8') ||
+            targetUrl.includes('m3u8-proxy')
+          ) {
+            const m3u8Text = await upstreamRes.text();
+            const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
+
+            const lines = m3u8Text.split('\n');
+            const rewrittenLines = lines.map((line) => {
+              const trimmed = line.trim();
+              if (!trimmed || trimmed.startsWith('#')) {
+                if (trimmed.includes('URI="')) {
+                  return trimmed.replace(/URI="([^"]+)"/, (_, uri) => {
+                    let fullUri = uri;
+                    if (!uri.startsWith('http://') && !uri.startsWith('https://')) {
+                      fullUri = new URL(uri, baseUrl).toString();
+                    }
+                    return `URI="${serverOrigin}/api/proxy?url=${encodeURIComponent(fullUri)}"`;
+                  });
+                }
+                return line;
+              }
+
+              let fullSegmentUrl = trimmed;
+              if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+                fullSegmentUrl = new URL(trimmed, baseUrl).toString();
+              }
+              return `${serverOrigin}/api/proxy?url=${encodeURIComponent(fullSegmentUrl)}`;
+            });
+
+            const output = rewrittenLines.join('\n');
+            res.writeHead(upstreamRes.status, {
+              ...headers,
+              'Content-Type': 'application/vnd.apple.mpegurl',
+              'Content-Length': Buffer.byteLength(output).toString(),
+            });
+            res.end(output);
+            return;
+          }
+
+          // Stream binary chunks (MP4, MPD, TS, SRT, VTT)
+          res.writeHead(upstreamRes.status, headers);
+          if (upstreamRes.body) {
+            const reader = upstreamRes.body.getReader();
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              res.write(value);
+            }
+          }
+          res.end();
+          return;
+        } catch (err: any) {
+          sendJson(res, 500, { error: err.message });
+          return;
+        }
+      }
+
+      // 2c. Documentation / Web UI
       if (pathname === '/' || pathname === '/api') {
         const accept = req.headers.accept || '';
         if (accept.includes('text/html')) {
@@ -62,13 +168,22 @@ export function createApiServer(options: ApiServerOptions = {}) {
           name: 'CinemaOS Stream & Subtitle Resolver API',
           version: '1.0.0',
           endpoints: {
+            player: `${serverOrigin}/player?title=Fight+Club`,
+            proxy: `${serverOrigin}/api/proxy?url=<url>`,
             health: `${serverOrigin}/health`,
             search: `${serverOrigin}/api/search?q=Fight+Club`,
             resolve: `${serverOrigin}/api/resolve?type=tv&id=213375&s=1&e=1`,
             scrape: `${serverOrigin}/api/scrape?type=movie&id=550`,
             metadata: `${serverOrigin}/api/metadata?type=tv&id=213375`,
           },
-          supportedScrapers: ['mv (Movy)', 'va (Vidapi)', 'vf (Vidfast)', 'vs (Vidstuck)'],
+          supportedScrapers: [
+            'z2 (Zephyr 4K)',
+            'mb2 (MovieBoxV2)',
+            'va (Vidapi)',
+            'vf (Vidfast)',
+            'vs (Vidstuck)',
+            'mv (Movy)',
+          ],
         });
         return;
       }
