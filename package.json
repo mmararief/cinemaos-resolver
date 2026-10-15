@@ -1,0 +1,60 @@
+{
+  "name": "cinemaos-resolver",
+  "version": "1.0.0",
+  "description": "High-performance video stream and subtitle extractor for CinemaOS (cinemaos.live) powered by reverse-engineered dual-HMAC content signing, PBKDF2/AES-256-GCM payload decryption, and multi-mirror relay scrapers.",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "cinemaos-resolver": "./dist/cli.js",
+    "cinemaos-tui": "./dist/tui.js",
+    "cinemaos-api": "./dist/api.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/tui.js",
+    "tui": "tsx src/tui.ts",
+    "api": "tsx src/api.ts",
+    "server": "tsx src/api.ts",
+    "dev": "tsx src/index.ts",
+    "test": "tsx example.ts",
+    "cli": "tsx src/cli.ts"
+  },
+  "keywords": [
+    "cinemaos",
+    "cinemaos-resolver",
+    "stream-extractor",
+    "m3u8-resolver",
+    "mpd-resolver",
+    "hls",
+    "dash",
+    "video-scraper",
+    "reverse-engineering",
+    "aes-256-gcm",
+    "pbkdf2",
+    "tmdb",
+    "indonesian-subtitles"
+  ],
+  "author": "Muhammad Ammar Arief",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mmararief/cinemaos-resolver.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mmararief/cinemaos-resolver/issues"
+  },
+  "homepage": "https://github.com/mmararief/cinemaos-resolver#readme",
+  "dependencies": {
+    "@clack/prompts": "^1.8.1",
+    "impit": "^0.8.0",
+    "open": "^11.0.4",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,432 @@
+#!/usr/bin/env node
+
+import http from 'node:http';
+import { URL } from 'node:url';
+import { CinemaosClient, KNOWN_CINEMAOS_TOKENS } from './client.js';
+import type { CinemaosResolutionResult, ContentType } from './types.js';
+
+export interface ApiServerOptions {
+  port?: number;
+  host?: string;
+  client?: CinemaosClient;
+  baseUrl?: string;
+}
+
+export function createApiServer(options: ApiServerOptions = {}) {
+  const port = options.port || parseInt(process.env.PORT || '3003', 10);
+  const host = options.host || process.env.HOST || '0.0.0.0';
+  const client = options.client || new CinemaosClient(options.baseUrl);
+
+  const server = http.createServer(async (req, res) => {
+    // CORS headers for all requests
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    try {
+      const hostHeader = req.headers.host || `localhost:${port}`;
+      const protocol = (req.socket as any).encrypted ? 'https' : 'http';
+      const requestUrl = new URL(req.url || '/', `${protocol}://${hostHeader}`);
+      const serverOrigin = `${protocol}://${hostHeader}`;
+      const pathname = requestUrl.pathname;
+
+      // 1. Health check
+      if (pathname === '/health' || pathname === '/api/health') {
+        sendJson(res, 200, {
+          status: 'ok',
+          service: 'cinemaos-resolver',
+          version: '1.0.0',
+          uptime: process.uptime(),
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+
+      // 2. Documentation / Web UI
+      if (pathname === '/' || pathname === '/api') {
+        const accept = req.headers.accept || '';
+        if (accept.includes('text/html')) {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(renderDocumentationHtml(serverOrigin));
+          return;
+        }
+
+        sendJson(res, 200, {
+          name: 'CinemaOS Stream & Subtitle Resolver API',
+          version: '1.0.0',
+          endpoints: {
+            health: `${serverOrigin}/health`,
+            resolve: `${serverOrigin}/api/resolve?type=tv&id=213375&s=1&e=1`,
+            scrape: `${serverOrigin}/api/scrape?type=movie&id=550`,
+            metadata: `${serverOrigin}/api/metadata?type=tv&id=213375`,
+          },
+          supportedScrapers: ['mv (Movy)', 'va (Vidapi)', 'vf (Vidfast)', 'vs (Vidstuck)'],
+        });
+        return;
+      }
+
+      // 3. Resolve metadata
+      if (pathname === '/api/metadata') {
+        const type = (requestUrl.searchParams.get('type') as ContentType) || 'movie';
+        const id = requestUrl.searchParams.get('id') || requestUrl.searchParams.get('tmdbId');
+
+        if (!id) {
+          sendJson(res, 400, { error: 'Missing required query parameter "id" or "tmdbId"' });
+          return;
+        }
+
+        const meta = await client.resolveMetadata(type, id);
+        sendJson(res, 200, { success: true, tmdbId: id, type, ...meta });
+        return;
+      }
+
+      // 4. Resolve Stream & Subtitles (/api/resolve or /api/scrape)
+      if (pathname === '/api/resolve' || pathname === '/api/scrape') {
+        const id =
+          requestUrl.searchParams.get('id') ||
+          requestUrl.searchParams.get('tmdbId') ||
+          requestUrl.searchParams.get('tmdb');
+
+        if (!id) {
+          sendJson(res, 400, {
+            error: 'Missing required parameter "id" (TMDB ID)',
+            example: `${serverOrigin}/api/resolve?type=tv&id=213375&s=1&e=1`,
+          });
+          return;
+        }
+
+        const rawType = requestUrl.searchParams.get('type');
+        const sParam = requestUrl.searchParams.get('s') || requestUrl.searchParams.get('season');
+        const eParam = requestUrl.searchParams.get('e') || requestUrl.searchParams.get('episode');
+
+        // Automatically infer TV if season/episode provided
+        const type: ContentType =
+          rawType === 'tv' || rawType === 'movie'
+            ? rawType
+            : (sParam || eParam ? 'tv' : 'movie');
+
+        const imdbId = requestUrl.searchParams.get('imdbId') || requestUrl.searchParams.get('imdb') || undefined;
+        const title = requestUrl.searchParams.get('t') || requestUrl.searchParams.get('title') || undefined;
+        const year = requestUrl.searchParams.get('y') || requestUrl.searchParams.get('year') || undefined;
+        const token = requestUrl.searchParams.get('token') || requestUrl.searchParams.get('_st') || undefined;
+        
+        const rawScrapers = requestUrl.searchParams.get('scrapers');
+        const scrapers = rawScrapers ? rawScrapers.split(',').map((s) => s.trim()) : undefined;
+
+        const result: CinemaosResolutionResult = await client.resolve(
+          {
+            type,
+            tmdbId: id,
+            imdbId,
+            title,
+            year,
+            seasonId: sParam ? parseInt(sParam, 10) : undefined,
+            episodeId: eParam ? parseInt(eParam, 10) : undefined,
+          },
+          { token, scrapers }
+        );
+
+        sendJson(res, result.success ? 200 : 404, result);
+        return;
+      }
+
+      // 404 Not Found
+      sendJson(res, 404, {
+        error: 'Not Found',
+        path: pathname,
+        help: `Visit ${serverOrigin}/ for interactive API documentation`,
+      });
+    } catch (err: any) {
+      console.error('[CinemaOS API Error]:', err);
+      sendJson(res, 500, {
+        error: 'Internal Server Error',
+        message: err.message || String(err),
+      });
+    }
+  });
+
+  return {
+    server,
+    start: () =>
+      new Promise<void>((resolve) => {
+        server.listen(port, host, () => {
+          console.log(`\n🎬 CinemaOS Resolver API Server is running:`);
+          console.log(`   ➜ Local:   http://${host === '0.0.0.0' ? 'localhost' : host}:${port}/`);
+          console.log(`   ➜ Health:  http://${host === '0.0.0.0' ? 'localhost' : host}:${port}/health`);
+          console.log(`   ➜ Scrape:  http://${host === '0.0.0.0' ? 'localhost' : host}:${port}/api/scrape?type=tv&id=213375&s=1&e=1\n`);
+          resolve();
+        });
+      }),
+    stop: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      }),
+  };
+}
+
+function sendJson(res: http.ServerResponse, status: number, data: any) {
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+  });
+  res.end(JSON.stringify(data, null, 2));
+}
+
+function renderDocumentationHtml(origin: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CinemaOS Resolver Microservice</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: #121826;
+      --card-border: #1e293b;
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --accent: #06b6d4;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --code-bg: #030712;
+      --success: #10b981;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 2rem 1rem;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    header {
+      margin-bottom: 2.5rem;
+      text-align: center;
+    }
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.75rem;
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      color: #818cf8;
+      font-size: 0.85rem;
+      font-weight: 600;
+      border-radius: 9999px;
+      margin-bottom: 1rem;
+    }
+    h1 {
+      font-size: 2.5rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: 0.5rem;
+      background: linear-gradient(135deg, #fff 0%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    p.subtitle {
+      color: var(--text-muted);
+      font-size: 1.1rem;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 1rem;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+    }
+    h2 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: #e2e8f0;
+    }
+    .endpoint {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+      background: var(--code-bg);
+      padding: 0.75rem 1rem;
+      border-radius: 0.5rem;
+      border: 1px solid #1f2937;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.9rem;
+    }
+    .method {
+      background: #0284c7;
+      color: white;
+      font-weight: 700;
+      padding: 0.15rem 0.5rem;
+      border-radius: 0.25rem;
+      font-size: 0.75rem;
+    }
+    .url {
+      color: #38bdf8;
+      text-decoration: none;
+      word-break: break-all;
+    }
+    .url:hover { text-decoration: underline; }
+    .features {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    .feature-item {
+      background: rgba(255, 255, 255, 0.03);
+      padding: 1rem;
+      border-radius: 0.75rem;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .feature-item h3 {
+      font-size: 1rem;
+      color: var(--accent);
+      margin-bottom: 0.25rem;
+    }
+    .feature-item p {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+    }
+    .test-box {
+      margin-top: 1rem;
+      display: flex;
+      gap: 0.5rem;
+    }
+    input {
+      flex: 1;
+      background: var(--code-bg);
+      border: 1px solid #334155;
+      color: white;
+      padding: 0.6rem 1rem;
+      border-radius: 0.5rem;
+      font-family: inherit;
+    }
+    button {
+      background: var(--primary);
+      color: white;
+      border: none;
+      padding: 0.6rem 1.25rem;
+      border-radius: 0.5rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover {
+      background: var(--primary-hover);
+    }
+    pre {
+      background: var(--code-bg);
+      padding: 1rem;
+      border-radius: 0.5rem;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      color: #a5b4fc;
+      max-height: 350px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <span class="badge">v1.0.0 Microservice</span>
+      <h1>CinemaOS Resolver API</h1>
+      <p class="subtitle">High-performance VIP stream & subtitle extractor for CinemaOS</p>
+    </header>
+
+    <div class="card">
+      <h2>🚀 Live Endpoints</h2>
+      
+      <div class="endpoint">
+        <span class="method">GET</span>
+        <a class="url" href="${origin}/api/resolve?type=tv&id=213375&s=1&e=1" target="_blank">${origin}/api/resolve?type=tv&id=213375&s=1&e=1</a>
+      </div>
+
+      <div class="endpoint">
+        <span class="method">GET</span>
+        <a class="url" href="${origin}/api/scrape?type=movie&id=550" target="_blank">${origin}/api/scrape?type=movie&id=550</a>
+      </div>
+
+      <div class="endpoint">
+        <span class="method">GET</span>
+        <a class="url" href="${origin}/api/metadata?type=tv&id=213375" target="_blank">${origin}/api/metadata?type=tv&id=213375</a>
+      </div>
+
+      <div class="endpoint">
+        <span class="method">GET</span>
+        <a class="url" href="${origin}/health" target="_blank">${origin}/health</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>⚡ Test Stream Extractor</h2>
+      <div class="test-box">
+        <input type="text" id="testUrl" value="/api/resolve?type=tv&id=213375&s=1&e=1" placeholder="Enter endpoint path...">
+        <button onclick="runTest()">Execute</button>
+      </div>
+      <div style="margin-top: 1rem;">
+        <pre id="testOutput">// Click "Execute" to fetch streams & subtitles...</pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>🛡️ Architecture Highlights</h2>
+      <div class="features">
+        <div class="feature-item">
+          <h3>Dual-HMAC Cryptography</h3>
+          <p>Extracts content secrets using primary & secondary SHA-256 HMAC cascading keys matching CinemaOS backend rules.</p>
+        </div>
+        <div class="feature-item">
+          <h3>PBKDF2 + AES-256-GCM</h3>
+          <p>Decrypts encrypted response payloads with 100,000 PBKDF2 iterations using custom salt, cin (IV), and mao (AuthTag).</p>
+        </div>
+        <div class="feature-item">
+          <h3>Multi-Mirror Scrapers</h3>
+          <p>Parallel queries against Movy (Altair, Sirius 4K, Spica), Vidapi (Helios, Selene), Vidfast (MiamiC), and Vidstuck (DASH).</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function runTest() {
+      const output = document.getElementById('testOutput');
+      const input = document.getElementById('testUrl').value;
+      output.textContent = 'Resolving streams...';
+      try {
+        const res = await fetch(input);
+        const data = await res.json();
+        output.textContent = JSON.stringify(data, null, 2);
+      } catch (err) {
+        output.textContent = 'Error: ' + err.message;
+      }
+    }
+  </script>
+</body>
+</html>`;
+}
+
+// Start immediately if executed directly via CLI
+const isDirectExecution = process.argv[1]?.replace(/\\/g, '/').endsWith('/api.ts') ||
+  process.argv[1]?.replace(/\\/g, '/').endsWith('/api.js');
+
+if (isDirectExecution) {
+  createApiServer().start();
+}
