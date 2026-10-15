@@ -67,6 +67,7 @@ export interface CinemaosResolutionResult {
   count: number;
   sources: CinemaosSource[];
   subtitles: CinemaosSubtitle[];
+  error?: string;
 }
 
 export interface ScrapeOptions {

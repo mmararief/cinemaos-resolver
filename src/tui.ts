@@ -83,7 +83,10 @@ async function main() {
   s.stop(pc.green('Resolution complete!'));
 
   if (!result.success || result.sources.length === 0) {
-    p.note('Could not find active streams for this title.', pc.red('No Streams Found'));
+    p.note(
+      result.error || 'Could not find active streams for this title.',
+      pc.red('No Streams Found')
+    );
     p.outro(pc.yellow('Exiting.'));
     return;
   }

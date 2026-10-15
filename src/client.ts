@@ -113,6 +113,7 @@ export class CinemaosClient {
     const sources: CinemaosSource[] = [];
     const subtitles: CinemaosSubtitle[] = [];
     const seenUrls = new Set<string>();
+    let forbiddenCount = 0;
 
     const fetchScraper = async (scraperId: string) => {
       try {
@@ -138,7 +139,12 @@ export class CinemaosClient {
           signal: AbortSignal.timeout(options.timeoutMs || 8000),
         });
 
-        if (!res.ok) return;
+        if (!res.ok) {
+          if (res.status === 403) {
+            forbiddenCount++;
+          }
+          return;
+        }
 
         const resJson: any = await res.json();
         let payload: DecryptedScrapeData | null = resJson;
@@ -190,6 +196,15 @@ export class CinemaosClient {
 
     await Promise.allSettled(scrapersToQuery.map((s) => fetchScraper(s)));
 
+    let error: string | undefined;
+    if (sources.length === 0) {
+      if (forbiddenCount > 0) {
+        error = `CinemaOS rejected request with 403 Forbidden. The session token (_st) is unique per TMDB title and must be generated for TMDB ID: ${tmdbIdStr}.`;
+      } else {
+        error = `No active streams found on CinemaOS relay scrapers for ${title || tmdbIdStr}.`;
+      }
+    }
+
     return {
       success: sources.length > 0,
       type: info.type,
@@ -201,6 +216,7 @@ export class CinemaosClient {
       count: sources.length,
       sources,
       subtitles,
+      error,
     };
   }
 

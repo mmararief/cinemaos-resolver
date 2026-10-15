@@ -108,7 +108,7 @@ async function main() {
   }
 
   if (!result.success || result.sources.length === 0) {
-    console.log(pc.red('\n❌ No streams could be resolved from CinemaOS relay scrapers.'));
+    console.log(pc.red(`\n❌ ${result.error || 'No streams could be resolved from CinemaOS relay scrapers.'}`));
     process.exit(1);
   }
 
