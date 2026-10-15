@@ -270,13 +270,29 @@ export function renderPlayerHtml(serverOrigin: string): string {
       }
     }
 
-    function setupPlayer(streamUrl, subtitlesList) {
-      if (art) {
-        art.destroy();
-      }
+    let currentHls = null;
+    let currentDash = null;
 
-      const isDash = streamUrl.includes('.mpd');
-      const isHls = streamUrl.includes('.m3u8');
+    function setupPlayer(streamUrl, subtitlesList, isMp4File) {
+      if (currentHls) {
+        try { currentHls.destroy(); } catch {}
+        currentHls = null;
+      }
+      if (currentDash) {
+        try { currentDash.reset(); } catch {}
+        currentDash = null;
+      }
+      if (art && art.destroy) {
+        try {
+          art.destroy(false);
+        } catch {}
+      }
+      const container = document.getElementById('artplayer');
+      if (container) container.innerHTML = '';
+
+      const isDash = !isMp4File && (streamUrl.includes('.mpd') || streamUrl.includes('dash+xml'));
+      const isHls = !isMp4File && (streamUrl.includes('.m3u8') || streamUrl.includes('mpegurl'));
+      const playerType = isDash ? 'mpd' : isHls ? 'm3u8' : 'mp4';
 
       // Pick active subtitle
       let defaultSub = null;
@@ -287,7 +303,7 @@ export function renderPlayerHtml(serverOrigin: string): string {
       art = new Artplayer({
         container: '#artplayer',
         url: streamUrl,
-        type: isDash ? 'mpd' : isHls ? 'm3u8' : 'mp4',
+        type: playerType,
         autoplay: true,
         autoOrientation: true,
         pip: true,
@@ -309,18 +325,25 @@ export function renderPlayerHtml(serverOrigin: string): string {
         customType: {
           m3u8: function (video, url) {
             if (Hls.isSupported()) {
-              const hls = new Hls();
-              hls.loadSource(url);
-              hls.attachMedia(video);
+              currentHls = new Hls({
+                enableWorker: true,
+                lowLatencyMode: true,
+              });
+              currentHls.loadSource(url);
+              currentHls.attachMedia(video);
             } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
               video.src = url;
             }
           },
           mpd: function (video, url) {
-            const player = dashjs.MediaPlayer().create();
-            player.initialize(video, url, true);
+            currentDash = dashjs.MediaPlayer().create();
+            currentDash.initialize(video, url, true);
           }
         }
+      });
+
+      art.on('error', (err) => {
+        console.warn('Playback error on server:', err);
       });
     }
 
@@ -335,7 +358,7 @@ export function renderPlayerHtml(serverOrigin: string): string {
         isIndonesian: s.isIndonesian
       }));
 
-      setupPlayer(proxiedUrl, subList);
+      setupPlayer(proxiedUrl, subList, src.type === 'mp4');
     }
 
     function changeServer() {

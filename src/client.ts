@@ -264,6 +264,23 @@ export class CinemaosClient {
 
     await Promise.allSettled(scrapersToQuery.map((s) => fetchScraper(s)));
 
+    // Prioritize 4K / 1080p FHD streams and direct HLS/MP4 before DASH
+    sources.sort((a, b) => {
+      const getScore = (s: any) => {
+        let score = 0;
+        if (s.quality.includes('4K') || s.quality.includes('2160')) score += 50;
+        else if (s.quality.includes('1080') || s.quality.includes('FHD')) score += 40;
+        else if (s.quality.includes('720')) score += 30;
+        else if (s.quality.includes('480')) score += 20;
+        else score += 10;
+
+        if (s.type === 'hls') score += 5;
+        else if (s.type === 'mp4') score += 4;
+        return score;
+      };
+      return getScore(b) - getScore(a);
+    });
+
     let error: string | undefined;
     if (sources.length === 0) {
       if (forbiddenCount > 0) {

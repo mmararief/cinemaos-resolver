@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import http from 'node:http';
+import { Readable } from 'node:stream';
 import { URL } from 'node:url';
 import { CinemaosClient, KNOWN_CINEMAOS_TOKENS } from './client.js';
 import { searchMediaByTitle } from './search.js';
@@ -137,20 +138,49 @@ export function createApiServer(options: ApiServerOptions = {}) {
             return;
           }
 
-          // Stream binary chunks (MP4, MPD, TS, SRT, VTT)
+          // If DASH MPD manifest, rewrite initialization and media templates
+          if (
+            contentType.includes('dash+xml') ||
+            targetUrl.includes('.mpd')
+          ) {
+            let mpdText = await upstreamRes.text();
+            const proxiedPrefix = `${serverOrigin}/api/proxy?url=`;
+
+            mpdText = mpdText.replace(/(initialization|media)="([^"]+)"/g, (match, attr, urlVal) => {
+              const encoded = encodeURIComponent(urlVal)
+                .replace(/%24RepresentationID%24/g, '$RepresentationID$')
+                .replace(/%24Number%2505d%24/g, '$Number%05d$')
+                .replace(/%24Number%24/g, '$Number$');
+              return `${attr}="${proxiedPrefix}${encoded}"`;
+            });
+
+            res.writeHead(upstreamRes.status, {
+              ...headers,
+              'Content-Type': 'application/dash+xml',
+              'Content-Length': Buffer.byteLength(mpdText).toString(),
+            });
+            res.end(mpdText);
+            return;
+          }
+
+          // Stream binary chunks (MP4, TS, SRT, VTT, M4S) with native backpressure
           res.writeHead(upstreamRes.status, headers);
           if (upstreamRes.body) {
-            const reader = upstreamRes.body.getReader();
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              res.write(value);
-            }
+            const nodeStream = Readable.fromWeb(upstreamRes.body as any);
+            res.on('close', () => {
+              try {
+                nodeStream.destroy();
+              } catch {}
+            });
+            nodeStream.pipe(res);
+          } else {
+            res.end();
           }
-          res.end();
           return;
         } catch (err: any) {
-          sendJson(res, 500, { error: err.message });
+          if (!res.headersSent) {
+            sendJson(res, 500, { error: err.message });
+          }
           return;
         }
       }
