@@ -105,17 +105,7 @@ export async function getCinemaosToken(
   let spawnCmd = chromePath;
   let spawnArgs: string[] = [];
 
-  if (hasXvfb) {
-    spawnCmd = '/usr/bin/xvfb-run';
-    spawnArgs = [
-      '--auto-servernum',
-      '--server-args=-screen 0 1920x1080x24',
-      chromePath,
-      ...baseChromeArgs,
-      '--window-size=1920,1080',
-      'about:blank',
-    ];
-  } else if (isLinux) {
+  if (isLinux) {
     spawnArgs = [
       ...baseChromeArgs,
       '--headless=new',
@@ -132,7 +122,7 @@ export async function getCinemaosToken(
     ];
   }
 
-  console.log(`[TokenFetcher] Spawning Chrome for ${type}/${idStr} on debugging port ${port} (xvfb: ${hasXvfb})...`);
+  console.log(`[TokenFetcher] Spawning headless Chrome for ${type}/${idStr} on debugging port ${port}...`);
   const chrome = spawn(spawnCmd, spawnArgs);
 
   return new Promise<string | null>(async (resolve) => {
