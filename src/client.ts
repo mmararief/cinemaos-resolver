@@ -136,7 +136,7 @@ export class CinemaosClient {
           t: title || '',
           ry: year || '',
           secret,
-          _st: token,
+          _st: token || '',
           scraper: scraperId,
         });
 
