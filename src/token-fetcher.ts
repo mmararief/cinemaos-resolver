@@ -66,10 +66,10 @@ export async function getCinemaosToken(
 ): Promise<string | null> {
   const idStr = String(tmdbId);
 
-  // 1. Check local cache (valid for 3 days = 259,200,000 ms) unless forceFresh requested
+  // 1. Check local cache (valid for 10 minutes = 600,000 ms) unless forceFresh requested
   if (!forceFresh) {
     const cache = loadTokensCache();
-    if (cache[idStr] && Date.now() - cache[idStr].timestamp < 3 * 24 * 60 * 60 * 1000) {
+    if (cache[idStr] && Date.now() - cache[idStr].timestamp < 10 * 60 * 1000) {
       return cache[idStr].token;
     }
   }
@@ -86,7 +86,9 @@ export async function getCinemaosToken(
   const targetUrl = `https://cinemaos.live/watch/${type}/${idStr}`;
 
   const isLinux = os.platform() === 'linux';
-  const chromeArgs = [
+  const hasXvfb = isLinux && existsSync('/usr/bin/xvfb-run');
+
+  const baseChromeArgs = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage',
@@ -99,22 +101,39 @@ export async function getCinemaosToken(
     `--user-data-dir=${userProfileDir}`,
     `--remote-debugging-port=${port}`,
   ];
-  if (isLinux) {
-    chromeArgs.push(
+
+  let spawnCmd = chromePath;
+  let spawnArgs: string[] = [];
+
+  if (hasXvfb) {
+    spawnCmd = '/usr/bin/xvfb-run';
+    spawnArgs = [
+      '--auto-servernum',
+      '--server-args=-screen 0 1920x1080x24',
+      chromePath,
+      ...baseChromeArgs,
+      '--window-size=1920,1080',
+      'about:blank',
+    ];
+  } else if (isLinux) {
+    spawnArgs = [
+      ...baseChromeArgs,
       '--headless=new',
       '--disable-gpu',
-      '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-    );
+      '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'about:blank',
+    ];
   } else {
-    chromeArgs.push(
+    spawnArgs = [
+      ...baseChromeArgs,
       '--window-position=-3200,-3200',
-      '--window-size=800,600'
-    );
+      '--window-size=800,600',
+      'about:blank',
+    ];
   }
-  chromeArgs.push('about:blank');
 
-  console.log(`[TokenFetcher] Spawning Chrome for ${type}/${idStr} on debugging port ${port}...`);
-  const chrome = spawn(chromePath, chromeArgs);
+  console.log(`[TokenFetcher] Spawning Chrome for ${type}/${idStr} on debugging port ${port} (xvfb: ${hasXvfb})...`);
+  const chrome = spawn(spawnCmd, spawnArgs);
 
   return new Promise<string | null>(async (resolve) => {
     let resolved = false;
