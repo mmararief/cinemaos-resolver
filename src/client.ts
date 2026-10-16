@@ -1,6 +1,6 @@
 import { Impit } from 'impit';
 import { generateContentHash, decryptPayload } from './crypto.js';
-import { getCinemaosToken } from './token-fetcher.js';
+import { getCinemaosToken, invalidateTokenCache } from './token-fetcher.js';
 import type {
   ContentType,
   ContentInfo,
@@ -11,9 +11,7 @@ import type {
   DecryptedScrapeData,
 } from './types.js';
 
-export const KNOWN_CINEMAOS_TOKENS: Record<string, string> = {
-  '213375': '1792109554.07f4a70c1051d8d501a7a40796a9a28569f579939eaec01ed110430d4b3e3a94',
-};
+export const KNOWN_CINEMAOS_TOKENS: Record<string, string> = {};
 
 export const DEFAULT_SCRAPERS = [
   'z2',
@@ -101,19 +99,9 @@ export class CinemaosClient {
       ...(info.type === 'tv' ? { seasonId: seasonStr, episodeId: episodeStr } : {}),
     });
 
-    let token =
-      options.token ||
-      KNOWN_CINEMAOS_TOKENS[tmdbIdStr];
-
+    let token = options.token;
     if (!token) {
-      const autoToken = await getCinemaosToken(info.type, tmdbIdStr);
-      if (autoToken) {
-        token = autoToken;
-      }
-    }
-
-    if (!token) {
-      token = KNOWN_CINEMAOS_TOKENS['213375'];
+      token = (await getCinemaosToken(info.type, tmdbIdStr)) || undefined;
     }
 
     if (!token) {
@@ -128,6 +116,7 @@ export class CinemaosClient {
         count: 0,
         sources: [],
         subtitles: [],
+        error: 'Failed to obtain CinemaOS session token.',
       };
     }
 
@@ -263,6 +252,18 @@ export class CinemaosClient {
     };
 
     await Promise.allSettled(scrapersToQuery.map((s) => fetchScraper(s)));
+
+    // If all scrapers were rejected with 403 Forbidden, token is expired or invalid.
+    // Invalidate cache, obtain a fresh token using Chrome, and retry once!
+    if (sources.length === 0 && forbiddenCount > 0 && !options.token) {
+      invalidateTokenCache(tmdbIdStr);
+      const freshToken = await getCinemaosToken(info.type, tmdbIdStr, true);
+      if (freshToken) {
+        token = freshToken;
+        forbiddenCount = 0;
+        await Promise.allSettled(scrapersToQuery.map((s) => fetchScraper(s)));
+      }
+    }
 
     // Fast concurrent probe to filter dead 502/404 streams and detect HEVC codecs
     const validatedSources: CinemaosSource[] = [];

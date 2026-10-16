@@ -47,20 +47,31 @@ function saveTokenToCache(tmdbId: string, token: string) {
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+export function invalidateTokenCache(tmdbId: string | number) {
+  try {
+    const cache = loadTokensCache();
+    delete cache[String(tmdbId)];
+    writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2), 'utf-8');
+  } catch {}
+}
+
 /**
  * Automatically obtains an active CinemaOS session token (_st)
  * using background Chrome CDP interception and local caching.
  */
 export async function getCinemaosToken(
   type: 'movie' | 'tv',
-  tmdbId: string | number
+  tmdbId: string | number,
+  forceFresh: boolean = false
 ): Promise<string | null> {
   const idStr = String(tmdbId);
 
-  // 1. Check local cache (valid for 3 days = 259,200,000 ms)
-  const cache = loadTokensCache();
-  if (cache[idStr] && Date.now() - cache[idStr].timestamp < 3 * 24 * 60 * 60 * 1000) {
-    return cache[idStr].token;
+  // 1. Check local cache (valid for 3 days = 259,200,000 ms) unless forceFresh requested
+  if (!forceFresh) {
+    const cache = loadTokensCache();
+    if (cache[idStr] && Date.now() - cache[idStr].timestamp < 3 * 24 * 60 * 60 * 1000) {
+      return cache[idStr].token;
+    }
   }
 
   // 2. Locate Chrome binary
