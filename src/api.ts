@@ -309,9 +309,6 @@ export function createApiServer(options: ApiServerOptions = {}) {
           });
           return;
         }
-          rawType === 'tv' || rawType === 'movie'
-            ? rawType
-            : (sParam || eParam ? 'tv' : 'movie');
 
         const imdbId = requestUrl.searchParams.get('imdbId') || requestUrl.searchParams.get('imdb') || undefined;
         const title = requestUrl.searchParams.get('t') || requestUrl.searchParams.get('title') || undefined;

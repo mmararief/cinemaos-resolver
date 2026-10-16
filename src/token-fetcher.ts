@@ -74,18 +74,35 @@ export async function getCinemaosToken(
   const userProfileDir = join(os.homedir(), '.cinemaos-chrome-profile');
   const targetUrl = `https://cinemaos.live/watch/${type}/${idStr}`;
 
-  const chrome = spawn(chromePath, [
-    `--user-data-dir=${userProfileDir}`,
-    `--remote-debugging-port=${port}`,
+  const isLinux = os.platform() === 'linux';
+  const chromeArgs = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-blink-features=AutomationControlled',
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-fre',
     '--disable-search-engine-choice-screen',
     '--password-store=basic',
-    '--window-position=-3200,-3200',
-    '--window-size=800,600',
-    'about:blank',
-  ]);
+    `--user-data-dir=${userProfileDir}`,
+    `--remote-debugging-port=${port}`,
+  ];
+  if (isLinux) {
+    chromeArgs.push(
+      '--headless=new',
+      '--disable-gpu',
+      '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    );
+  } else {
+    chromeArgs.push(
+      '--window-position=-3200,-3200',
+      '--window-size=800,600'
+    );
+  }
+  chromeArgs.push('about:blank');
+
+  const chrome = spawn(chromePath, chromeArgs);
 
   return new Promise<string | null>(async (resolve) => {
     let resolved = false;

@@ -91,7 +91,17 @@ export function renderPlayerHtml(serverOrigin: string): string {
       display: flex;
       flex-wrap: wrap;
       gap: 0.75rem;
-      align-items: center;
+      align-items: flex-end;
+    }
+    .control {
+      display: flex;
+      flex-direction: column;
+    }
+    .control label {
+      font-size: 0.72rem;
+      color: #94a3b8;
+      margin-bottom: 0.2rem;
+      letter-spacing: 0.01em;
     }
     select {
       background: #1e2230;
@@ -102,9 +112,14 @@ export function renderPlayerHtml(serverOrigin: string): string {
       font-size: 0.85rem;
       outline: none;
       cursor: pointer;
+      max-width: 260px;
     }
     select:focus {
       border-color: #38bdf8;
+    }
+    select.control-active {
+      border-color: rgba(56, 189, 248, 0.6);
+      background: #172033;
     }
     .loading-overlay {
       position: absolute;
@@ -154,12 +169,20 @@ export function renderPlayerHtml(serverOrigin: string): string {
       </div>
 
       <div class="controls-row">
-        <div>
-          <label style="font-size: 0.75rem; color: #94a3b8; display: block; margin-bottom: 0.2rem;">Server / Quality</label>
+        <div class="control" id="dubWrap" style="display: none;">
+          <label>Dub / Audio Language</label>
+          <select id="dubSelect" onchange="changeDub()"></select>
+        </div>
+        <div class="control">
+          <label>Server / Quality</label>
           <select id="serverSelect" onchange="changeServer()"></select>
         </div>
-        <div>
-          <label style="font-size: 0.75rem; color: #94a3b8; display: block; margin-bottom: 0.2rem;">Subtitle Track</label>
+        <div class="control" id="audioTrackWrap" style="display: none;">
+          <label>In-Stream Audio Track</label>
+          <select id="audioTrackSelect" onchange="changeAudioTrack()"></select>
+        </div>
+        <div class="control">
+          <label>Subtitle Track</label>
           <select id="subtitleSelect" onchange="changeSubtitle()"></select>
         </div>
       </div>
@@ -169,6 +192,7 @@ export function renderPlayerHtml(serverOrigin: string): string {
   <script>
     let art = null;
     let currentData = null;
+    let filteredSources = [];
 
     const params = new URLSearchParams(window.location.search);
     const mediaId = params.get('id') || params.get('tmdbId') || '';
@@ -232,39 +256,8 @@ export function renderPlayerHtml(serverOrigin: string): string {
         titleElem.textContent = data.title || (mediaType === 'tv' ? \`Series S\${season}E\${episode}\` : 'Movie');
         metaElem.textContent = \`TMDB ID: \${data.tmdbId} • \${data.sources.length} Servers Available • \${data.subtitles?.length || 0} Subtitles\`;
 
-        // Populate server select
-        const serverSelect = document.getElementById('serverSelect');
-        serverSelect.innerHTML = '';
-        data.sources.forEach((src, idx) => {
-          const opt = document.createElement('option');
-          opt.value = idx;
-          const audioLabel = src.audio ? \` [🔊 \${src.audio}]\` : '';
-          opt.textContent = \`[\${src.type.toUpperCase()}] \${src.label}\${audioLabel}\`;
-          serverSelect.appendChild(opt);
-        });
-
-        // Populate subtitle select
-        const subSelect = document.getElementById('subtitleSelect');
-        subSelect.innerHTML = '<option value="-1">None (Off)</option>';
-
-        let defaultSubIdx = -1;
-        (data.subtitles || []).forEach((sub, idx) => {
-          const opt = document.createElement('option');
-          opt.value = idx;
-          opt.textContent = sub.isIndonesian ? \`🇮🇩 \${sub.label} (Indonesian)\` : sub.label;
-          subSelect.appendChild(opt);
-
-          if (sub.isIndonesian && defaultSubIdx === -1) {
-            defaultSubIdx = idx;
-          }
-        });
-
-        // Auto select Indonesian if available
-        if (defaultSubIdx !== -1) {
-          subSelect.value = defaultSubIdx;
-        }
-
-        playSourceIndex(0);
+        populateSubtitles(data.subtitles || []);
+        populateDubs(data.sources);
       } catch (err) {
         document.getElementById('loadingText').textContent = 'Failed to load: ' + err.message;
       }
@@ -289,6 +282,9 @@ export function renderPlayerHtml(serverOrigin: string): string {
       }
       const container = document.getElementById('artplayer');
       if (container) container.innerHTML = '';
+
+      // Audio track selector only applies to the stream we are about to load
+      hideAudioTracks();
 
       const isDash = !isMp4File && (streamUrl.includes('.mpd') || streamUrl.includes('dash+xml'));
       const isHls = !isMp4File && (streamUrl.includes('.m3u8') || streamUrl.includes('mpegurl'));
@@ -331,13 +327,23 @@ export function renderPlayerHtml(serverOrigin: string): string {
               });
               currentHls.loadSource(url);
               currentHls.attachMedia(video);
+              currentHls.on(Hls.Events.MANIFEST_PARSED, function () {
+                populateAudioTracks(currentHls.audioTracks || []);
+              });
+              currentHls.on(Hls.Events.AUDIO_TRACKS_UPDATED, function () {
+                populateAudioTracks(currentHls.audioTracks || []);
+              });
             } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
               video.src = url;
+              hideAudioTracks();
             }
           },
           mpd: function (video, url) {
             currentDash = dashjs.MediaPlayer().create();
             currentDash.initialize(video, url, true);
+            currentDash.on('streamInitialized', function () {
+              populateAudioTracks(currentDash.getTracksFor('audio'));
+            });
           }
         }
       });
@@ -348,8 +354,8 @@ export function renderPlayerHtml(serverOrigin: string): string {
     }
 
     function playSourceIndex(index) {
-      if (!currentData || !currentData.sources[index]) return;
-      const src = currentData.sources[index];
+      if (!filteredSources || !filteredSources[index]) return;
+      const src = filteredSources[index];
       const proxiedUrl = buildProxiedUrl(src.url);
 
       const subList = (currentData.subtitles || []).map(s => ({
@@ -366,6 +372,91 @@ export function renderPlayerHtml(serverOrigin: string): string {
       playSourceIndex(parseInt(idx, 10));
     }
 
+    // ---- Dub / audio language management ----
+
+    // Gathers every distinct audio language exposed by the scrapers and,
+    // when more than one dub exists, reveals the dub switcher.
+    function populateDubs(sources) {
+      const dubWrap = document.getElementById('dubWrap');
+      const dubSelect = document.getElementById('dubSelect');
+
+      const langs = [];
+      (sources || []).forEach(function (s) {
+        if (s.audio && langs.indexOf(s.audio) === -1) langs.push(s.audio);
+      });
+
+      dubSelect.innerHTML = '';
+      const allOpt = document.createElement('option');
+      allOpt.value = '__all__';
+      allOpt.textContent = '🔊 All audio dubs';
+      dubSelect.appendChild(allOpt);
+
+      langs.sort().forEach(function (lang) {
+        const opt = document.createElement('option');
+        opt.value = lang;
+        opt.textContent = '🔊 ' + lang;
+        dubSelect.appendChild(opt);
+      });
+
+      dubWrap.style.display = langs.length > 1 ? '' : 'none';
+      dubSelect.value = '__all__';
+      applyDubFilter('__all__');
+    }
+
+    // Filters the server list down to the chosen dub language and reloads it.
+    function applyDubFilter(lang) {
+      const all = (currentData && currentData.sources) ? currentData.sources : [];
+      filteredSources = (!lang || lang === '__all__')
+        ? all.slice()
+        : all.filter(function (s) { return s.audio === lang; });
+
+      // Never leave the user with an empty list
+      if (filteredSources.length === 0) filteredSources = all.slice();
+
+      const serverSelect = document.getElementById('serverSelect');
+      serverSelect.innerHTML = '';
+      filteredSources.forEach(function (src, idx) {
+        const opt = document.createElement('option');
+        opt.value = idx;
+        const audioLabel = src.audio ? \` [🔊 \${src.audio}]\` : '';
+        opt.textContent = \`[\${src.type.toUpperCase()}] \${src.label}\${audioLabel}\`;
+        serverSelect.appendChild(opt);
+      });
+
+      const dubSelect = document.getElementById('dubSelect');
+      dubSelect.classList.toggle('control-active', !!lang && lang !== '__all__');
+
+      if (filteredSources.length > 0) playSourceIndex(0);
+    }
+
+    function changeDub() {
+      applyDubFilter(document.getElementById('dubSelect').value);
+    }
+
+    // ---- Subtitle management ----
+
+    function populateSubtitles(subtitles) {
+      const subSelect = document.getElementById('subtitleSelect');
+      subSelect.innerHTML = '<option value="-1">None (Off)</option>';
+
+      let defaultSubIdx = -1;
+      subtitles.forEach(function (sub, idx) {
+        const opt = document.createElement('option');
+        opt.value = idx;
+        opt.textContent = sub.isIndonesian ? \`🇮🇩 \${sub.label} (Indonesian)\` : sub.label;
+        subSelect.appendChild(opt);
+
+        if (sub.isIndonesian && defaultSubIdx === -1) {
+          defaultSubIdx = idx;
+        }
+      });
+
+      // Auto select Indonesian if available
+      if (defaultSubIdx !== -1) {
+        subSelect.value = defaultSubIdx;
+      }
+    }
+
     function changeSubtitle() {
       const subIdx = parseInt(document.getElementById('subtitleSelect').value, 10);
       if (!art) return;
@@ -379,6 +470,45 @@ export function renderPlayerHtml(serverOrigin: string): string {
           type: sub.file.includes('.vtt') ? 'vtt' : 'srt',
         });
         art.subtitle.show = true;
+      }
+    }
+
+    // ---- In-stream audio track management (HLS / DASH renditions) ----
+
+    function hideAudioTracks() {
+      const wrap = document.getElementById('audioTrackWrap');
+      if (wrap) wrap.style.display = 'none';
+    }
+
+    function populateAudioTracks(tracks) {
+      const wrap = document.getElementById('audioTrackWrap');
+      const sel = document.getElementById('audioTrackSelect');
+
+      if (!tracks || tracks.length <= 1) {
+        hideAudioTracks();
+        return;
+      }
+
+      sel.innerHTML = '';
+      tracks.forEach(function (t, i) {
+        const opt = document.createElement('option');
+        opt.value = i;
+        opt.textContent = '🎧 ' + (t.name || t.lang || ('Audio ' + (i + 1)));
+        sel.appendChild(opt);
+      });
+
+      wrap.style.display = '';
+      const active = currentHls && typeof currentHls.audioTrack === 'number' ? currentHls.audioTrack : 0;
+      sel.value = String(active);
+    }
+
+    function changeAudioTrack() {
+      const i = parseInt(document.getElementById('audioTrackSelect').value, 10);
+      if (currentHls && currentHls.audioTracks && currentHls.audioTracks[i]) {
+        currentHls.audioTrack = i;
+      } else if (currentDash) {
+        const tracks = currentDash.getTracksFor('audio');
+        if (tracks && tracks[i]) currentDash.setCurrentTrack(tracks[i]);
       }
     }
 

@@ -136,8 +136,38 @@ async function main() {
     );
   }
 
+  // Dub / audio language selection
+  let dubSources = result.sources;
+  const audioLangs = [...new Set(result.sources.map((s) => s.audio).filter(Boolean))] as string[];
+
+  if (audioLangs.length > 1) {
+    const dubChoice: any = await p.select({
+      message: 'Select dub / audio language:',
+      options: [
+        {
+          value: '__all__',
+          label: `🔊 All audio dubs (${result.sources.length} servers)`,
+        },
+        ...audioLangs.map((lang) => ({
+          value: lang,
+          label: `🔊 ${lang} (${result.sources.filter((s) => s.audio === lang).length} servers)`,
+        })),
+      ],
+    });
+
+    if (p.isCancel(dubChoice)) {
+      p.cancel('Operation cancelled.');
+      process.exit(0);
+    }
+
+    if (dubChoice !== '__all__') {
+      const filtered = result.sources.filter((s) => s.audio === dubChoice);
+      if (filtered.length > 0) dubSources = filtered;
+    }
+  }
+
   // Interactive Stream Action
-  const streamOptions = result.sources.map((src, i) => {
+  const streamOptions = dubSources.map((src, i) => {
     const is4k = src.quality?.includes('2160') || src.quality?.includes('4K');
     const badge = is4k ? pc.bgMagenta(' 4K ') : pc.bgBlue(` ${src.quality || '1080p'} `);
     const typeBadge =
