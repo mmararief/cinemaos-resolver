@@ -622,9 +622,13 @@ function renderDocumentationHtml(origin: string): string {
 </html>`;
 }
 
-// Start immediately if executed directly via CLI
-const isDirectExecution = process.argv[1]?.replace(/\\/g, '/').endsWith('/api.ts') ||
-  process.argv[1]?.replace(/\\/g, '/').endsWith('/api.js');
+// Start immediately if executed directly via CLI or PM2
+const isDirectExecution =
+  process.argv[1]?.replace(/\\/g, '/').endsWith('/api.ts') ||
+  process.argv[1]?.replace(/\\/g, '/').endsWith('/api.js') ||
+  process.env.pm_exec_path?.replace(/\\/g, '/').endsWith('/api.js') ||
+  process.env.PM2_HOME !== undefined ||
+  process.env.PORT !== undefined;
 
 if (isDirectExecution) {
   createApiServer().start();
