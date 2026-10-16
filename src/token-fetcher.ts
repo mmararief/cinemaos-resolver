@@ -55,10 +55,9 @@ export function invalidateTokenCache(tmdbId: string | number) {
   } catch {}
 }
 
-/**
- * Automatically obtains an active CinemaOS session token (_st)
- * using background Chrome CDP interception and local caching.
- */
+let tokenQueue = Promise.resolve();
+const inFlightTokens = new Map<string, Promise<string | null>>();
+
 export async function getCinemaosToken(
   type: 'movie' | 'tv',
   tmdbId: string | number,
@@ -66,7 +65,7 @@ export async function getCinemaosToken(
 ): Promise<string | null> {
   const idStr = String(tmdbId);
 
-  // 1. Check local cache (valid for 10 minutes = 600,000 ms) unless forceFresh requested
+  // 1. Check local cache (valid for 10 minutes) unless forceFresh requested
   if (!forceFresh) {
     const cache = loadTokensCache();
     if (cache[idStr] && Date.now() - cache[idStr].timestamp < 10 * 60 * 1000) {
@@ -74,9 +73,55 @@ export async function getCinemaosToken(
     }
   }
 
-  // 2. Locate Chrome binary
+  // 2. If already fetching for this ID, reuse that exact promise
+  if (inFlightTokens.has(idStr)) {
+    return inFlightTokens.get(idStr)!;
+  }
+
+  // 3. Queue execution sequentially so VPS (1 vCPU) only runs 1 browser at a time
+  const fetchPromise = new Promise<string | null>((resolve) => {
+    tokenQueue = tokenQueue
+      .then(async () => {
+        try {
+          const res = await fetchTokenInternal(type, tmdbId, forceFresh);
+          resolve(res);
+        } catch (err) {
+          console.error(`[TokenFetcher] Error fetching token for ${type}/${idStr}:`, err);
+          resolve(null);
+        } finally {
+          inFlightTokens.delete(idStr);
+        }
+      })
+      .catch((err) => {
+        console.error('[TokenFetcher] Queue failure:', err);
+        inFlightTokens.delete(idStr);
+        resolve(null);
+      });
+  });
+
+  inFlightTokens.set(idStr, fetchPromise);
+  return fetchPromise;
+}
+
+async function fetchTokenInternal(
+  type: 'movie' | 'tv',
+  tmdbId: string | number,
+  forceFresh: boolean = false
+): Promise<string | null> {
+  const idStr = String(tmdbId);
+
+  // Re-check cache in case previous queued job already fetched it
+  if (!forceFresh) {
+    const cache = loadTokensCache();
+    if (cache[idStr] && Date.now() - cache[idStr].timestamp < 10 * 60 * 1000) {
+      return cache[idStr].token;
+    }
+  }
+
+  // Locate Chrome binary
   const chromePath = getChromePath();
   if (!chromePath) {
+    console.error('[TokenFetcher] No Chrome binary found on system');
     return null;
   }
 
@@ -98,6 +143,7 @@ export async function getCinemaosToken(
     '--disable-fre',
     '--disable-search-engine-choice-screen',
     '--password-store=basic',
+    '--disable-gpu',
     `--user-data-dir=${userProfileDir}`,
     `--remote-debugging-port=${port}`,
   ];
@@ -105,11 +151,23 @@ export async function getCinemaosToken(
   let spawnCmd = chromePath;
   let spawnArgs: string[] = [];
 
-  if (isLinux) {
+  if (hasXvfb) {
+    // Real browser in virtual display bypasses Cloudflare Turnstile without CPU lock
+    spawnCmd = '/usr/bin/xvfb-run';
+    spawnArgs = [
+      '-a',
+      '-s',
+      '-screen 0 1024x768x24 -ac +render -noreset',
+      chromePath,
+      ...baseChromeArgs,
+      '--window-size=1024,768',
+      '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'about:blank',
+    ];
+  } else if (isLinux) {
     spawnArgs = [
       ...baseChromeArgs,
       '--headless=new',
-      '--disable-gpu',
       '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
       'about:blank',
     ];
@@ -122,7 +180,7 @@ export async function getCinemaosToken(
     ];
   }
 
-  console.log(`[TokenFetcher] Spawning headless Chrome for ${type}/${idStr} on debugging port ${port}...`);
+  console.log(`[TokenFetcher] Spawning Chrome for ${type}/${idStr} on debugging port ${port} (xvfb: ${hasXvfb})...`);
   const chrome = spawn(spawnCmd, spawnArgs);
 
   return new Promise<string | null>(async (resolve) => {
@@ -134,6 +192,11 @@ export async function getCinemaosToken(
         try {
           chrome.kill('SIGKILL');
         } catch {}
+        if (chrome.pid && isLinux) {
+          try {
+            spawn('pkill', ['-9', '-P', String(chrome.pid)]);
+          } catch {}
+        }
         try {
           rmSync(userProfileDir, { recursive: true, force: true });
         } catch {}
