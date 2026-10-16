@@ -113,6 +113,7 @@ export async function getCinemaosToken(
   }
   chromeArgs.push('about:blank');
 
+  console.log(`[TokenFetcher] Spawning Chrome for ${type}/${idStr} on debugging port ${port}...`);
   const chrome = spawn(chromePath, chromeArgs);
 
   return new Promise<string | null>(async (resolve) => {
@@ -128,14 +129,15 @@ export async function getCinemaosToken(
     };
 
     const timer = setTimeout(() => {
+      console.warn(`[TokenFetcher] Timeout (25s) reached while fetching token for ${type}/${idStr}`);
       cleanup();
       resolve(null);
-    }, 22000);
+    }, 25000);
 
     try {
       // Connect to CDP
       let wsUrl: string | null = null;
-      for (let i = 0; i < 25; i++) {
+      for (let i = 0; i < 30; i++) {
         try {
           const res = await fetch(`http://127.0.0.1:${port}/json/list`);
           const data: any = await res.json();
@@ -151,11 +153,13 @@ export async function getCinemaosToken(
       }
 
       if (!wsUrl) {
+        console.error(`[TokenFetcher] Failed to find page target on port ${port}`);
         cleanup();
         clearTimeout(timer);
         return resolve(null);
       }
 
+      console.log(`[TokenFetcher] Connected to CDP page websocket: ${wsUrl}`);
       const ws = new WebSocket(wsUrl);
 
       let msgId = 1;
@@ -164,6 +168,7 @@ export async function getCinemaosToken(
       };
 
       ws.onopen = () => {
+        console.log(`[TokenFetcher] Enabling Network & navigating to ${targetUrl}...`);
         send('Network.enable');
         send('Page.enable');
         send('Page.navigate', { url: targetUrl });
@@ -174,10 +179,12 @@ export async function getCinemaosToken(
           const msg = JSON.parse(String(event.data));
           if (msg.method === 'Network.requestWillBeSent') {
             const reqUrl = msg.params?.request?.url || '';
-            if (reqUrl.includes('/api/relay/scrape')) {
+            if (reqUrl.includes('/api/relay/scrape') || reqUrl.includes('_st=')) {
+              console.log(`[TokenFetcher] Captured relay request: ${reqUrl.substring(0, 100)}...`);
               const u = new URL(reqUrl);
               const st = u.searchParams.get('_st');
               if (st) {
+                console.log(`[TokenFetcher] SUCCESS! Token obtained: ${st.substring(0, 20)}...`);
                 resolved = true;
                 clearTimeout(timer);
                 saveTokenToCache(idStr, st);
@@ -192,12 +199,14 @@ export async function getCinemaosToken(
         } catch {}
       };
 
-      ws.onerror = () => {
+      ws.onerror = (err) => {
+        console.error('[TokenFetcher] WebSocket error:', err);
         cleanup();
         clearTimeout(timer);
         resolve(null);
       };
-    } catch {
+    } catch (err: any) {
+      console.error('[TokenFetcher] Exception:', err.message);
       cleanup();
       clearTimeout(timer);
       resolve(null);
