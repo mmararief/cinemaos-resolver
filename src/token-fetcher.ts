@@ -41,16 +41,20 @@ function saveTokenToCache(tmdbId: string, token: string) {
   try {
     const cache = loadTokensCache();
     cache[tmdbId] = { token, timestamp: Date.now() };
+    cache['__global__'] = { token, timestamp: Date.now() };
     writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2), 'utf-8');
   } catch {}
 }
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export function invalidateTokenCache(tmdbId: string | number) {
+export function invalidateTokenCache(tmdbId?: string | number) {
   try {
     const cache = loadTokensCache();
-    delete cache[String(tmdbId)];
+    if (tmdbId) {
+      delete cache[String(tmdbId)];
+    }
+    delete cache['__global__'];
     writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2), 'utf-8');
   } catch {}
 }
@@ -70,6 +74,9 @@ export async function getCinemaosToken(
     const cache = loadTokensCache();
     if (cache[idStr] && Date.now() - cache[idStr].timestamp < 10 * 60 * 1000) {
       return cache[idStr].token;
+    }
+    if (cache['__global__'] && Date.now() - cache['__global__'].timestamp < 10 * 60 * 1000) {
+      return cache['__global__'].token;
     }
   }
 
@@ -116,6 +123,9 @@ async function fetchTokenInternal(
     if (cache[idStr] && Date.now() - cache[idStr].timestamp < 10 * 60 * 1000) {
       return cache[idStr].token;
     }
+    if (cache['__global__'] && Date.now() - cache['__global__'].timestamp < 10 * 60 * 1000) {
+      return cache['__global__'].token;
+    }
   }
 
   // Locate Chrome binary
@@ -143,7 +153,6 @@ async function fetchTokenInternal(
     '--disable-fre',
     '--disable-search-engine-choice-screen',
     '--password-store=basic',
-    '--disable-gpu',
     `--user-data-dir=${userProfileDir}`,
     `--remote-debugging-port=${port}`,
   ];
@@ -152,23 +161,20 @@ async function fetchTokenInternal(
   let spawnArgs: string[] = [];
 
   if (hasXvfb) {
-    // Real browser in virtual display bypasses Cloudflare Turnstile without CPU lock
     spawnCmd = '/usr/bin/xvfb-run';
     spawnArgs = [
-      '-a',
-      '-s',
-      '-screen 0 1024x768x24 -ac +render -noreset',
+      '--auto-servernum',
+      '--server-args=-screen 0 1920x1080x24',
       chromePath,
       ...baseChromeArgs,
-      '--window-size=1024,768',
-      '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      '--window-size=1920,1080',
       'about:blank',
     ];
   } else if (isLinux) {
     spawnArgs = [
       ...baseChromeArgs,
       '--headless=new',
-      '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      '--disable-gpu',
       'about:blank',
     ];
   } else {
