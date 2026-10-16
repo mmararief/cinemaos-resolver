@@ -41,7 +41,6 @@ function saveTokenToCache(tmdbId: string, token: string) {
   try {
     const cache = loadTokensCache();
     cache[tmdbId] = { token, timestamp: Date.now() };
-    cache['__global__'] = { token, timestamp: Date.now() };
     writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2), 'utf-8');
   } catch {}
 }
@@ -54,7 +53,6 @@ export function invalidateTokenCache(tmdbId?: string | number) {
     if (tmdbId) {
       delete cache[String(tmdbId)];
     }
-    delete cache['__global__'];
     writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2), 'utf-8');
   } catch {}
 }
@@ -74,9 +72,6 @@ export async function getCinemaosToken(
     const cache = loadTokensCache();
     if (cache[idStr] && Date.now() - cache[idStr].timestamp < 10 * 60 * 1000) {
       return cache[idStr].token;
-    }
-    if (cache['__global__'] && Date.now() - cache['__global__'].timestamp < 10 * 60 * 1000) {
-      return cache['__global__'].token;
     }
   }
 
@@ -122,9 +117,6 @@ async function fetchTokenInternal(
     const cache = loadTokensCache();
     if (cache[idStr] && Date.now() - cache[idStr].timestamp < 10 * 60 * 1000) {
       return cache[idStr].token;
-    }
-    if (cache['__global__'] && Date.now() - cache['__global__'].timestamp < 10 * 60 * 1000) {
-      return cache['__global__'].token;
     }
   }
 
