@@ -2,8 +2,10 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import os from 'node:os';
+import { Impit } from 'impit';
 
 const CACHE_FILE = join(os.homedir(), '.cinemaos-tokens-cache.json');
+const CLEARANCE_CACHE = join(os.homedir(), '.cinemaos-clearance.json');
 
 const CANDIDATE_CHROME_PATHS = [
   // Windows
@@ -45,6 +47,31 @@ function saveTokenToCache(tmdbId: string, token: string) {
   } catch {}
 }
 
+interface ClearanceData {
+  cookieHeader: string;
+  userAgent: string;
+  timestamp: number;
+}
+
+function loadClearance(): ClearanceData | null {
+  try {
+    if (existsSync(CLEARANCE_CACHE)) {
+      const data = JSON.parse(readFileSync(CLEARANCE_CACHE, 'utf-8'));
+      // Valid for 6 hours
+      if (Date.now() - data.timestamp < 6 * 3600 * 1000) {
+        return data;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function saveClearance(cookieHeader: string, userAgent: string) {
+  try {
+    writeFileSync(CLEARANCE_CACHE, JSON.stringify({ cookieHeader, userAgent, timestamp: Date.now() }, null, 2), 'utf-8');
+  } catch {}
+}
+
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export function invalidateTokenCache(tmdbId?: string | number) {
@@ -57,9 +84,167 @@ export function invalidateTokenCache(tmdbId?: string | number) {
   } catch {}
 }
 
-let tokenQueue = Promise.resolve();
+let harvestQueue = Promise.resolve();
+
+async function harvestClearanceCookie(): Promise<ClearanceData | null> {
+  const chromePath = getChromePath();
+  if (!chromePath) return null;
+
+  return new Promise<ClearanceData | null>((resolve) => {
+    harvestQueue = harvestQueue.then(async () => {
+      // Recheck cache in case previous job harvested it
+      const cached = loadClearance();
+      if (cached) {
+        resolve(cached);
+        return;
+      }
+
+      console.log('[Clearance] Spawning background browser to harvest cf_clearance cookie...');
+      const port = 9300 + Math.floor(Math.random() * 400);
+      const userProfileDir = join(os.tmpdir(), `cinemaos-harvest-${Date.now()}-${port}`);
+      const isLinux = os.platform() === 'linux';
+      const hasXvfb = isLinux && existsSync('/usr/bin/xvfb-run');
+
+      const baseChromeArgs = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-blink-features=AutomationControlled',
+        '--no-first-run',
+        '--no-default-browser-check',
+        `--user-data-dir=${userProfileDir}`,
+        `--remote-debugging-port=${port}`,
+      ];
+
+      let spawnCmd = chromePath;
+      let spawnArgs: string[] = [];
+
+      if (hasXvfb) {
+        spawnCmd = '/usr/bin/xvfb-run';
+        spawnArgs = [
+          '--auto-servernum',
+          '--server-args=-screen 0 1920x1080x24',
+          chromePath,
+          ...baseChromeArgs,
+          '--window-size=1920,1080',
+          'about:blank',
+        ];
+      } else {
+        spawnArgs = [
+          ...baseChromeArgs,
+          '--window-position=-3200,-3200',
+          '--window-size=1280,720',
+          'about:blank',
+        ];
+      }
+
+      const chrome = spawn(spawnCmd, spawnArgs);
+      let resolved = false;
+
+      const cleanup = () => {
+        if (!resolved) {
+          resolved = true;
+          try { chrome.kill('SIGKILL'); } catch {}
+          if (chrome.pid && isLinux) {
+            try { spawn('pkill', ['-9', '-P', String(chrome.pid)]); } catch {}
+          }
+          try { rmSync(userProfileDir, { recursive: true, force: true }); } catch {}
+        }
+      };
+
+      const timer = setTimeout(() => {
+        console.warn('[Clearance] Harvest timeout (18s)');
+        cleanup();
+        resolve(null);
+      }, 18000);
+
+      try {
+        await wait(1500);
+        let wsUrl: string | null = null;
+        for (let i = 0; i < 20; i++) {
+          try {
+            const res = await fetch(`http://127.0.0.1:${port}/json/list`);
+            const list: any = await res.json();
+            const page = list.find((t: any) => t.type === 'page');
+            if (page?.webSocketDebuggerUrl) {
+              wsUrl = page.webSocketDebuggerUrl;
+              break;
+            }
+          } catch {}
+          await wait(250);
+        }
+
+        if (!wsUrl) {
+          cleanup();
+          clearTimeout(timer);
+          return resolve(null);
+        }
+
+        const ws = new WebSocket(wsUrl);
+        let id = 1;
+        const callbacks = new Map();
+        const send = (method: string, params: any = {}) => new Promise((res) => {
+          const curId = id++;
+          callbacks.set(curId, res);
+          ws.send(JSON.stringify({ id: curId, method, params }));
+        });
+
+        ws.onopen = async () => {
+          await send('Network.enable');
+          await send('Page.enable');
+          await send('Page.navigate', { url: 'https://cinemaos.live/watch/tv/213375' });
+        };
+
+        ws.onmessage = (e) => {
+          const msg = JSON.parse(String(e.data));
+          if (msg.id && callbacks.has(msg.id)) {
+            callbacks.get(msg.id)(msg.result);
+            callbacks.delete(msg.id);
+          }
+        };
+
+        // Wait 6.5s for Turnstile to clear
+        await wait(6500);
+
+        const cookiesRes: any = await send('Network.getCookies');
+        const cookies = cookiesRes?.cookies || [];
+        const cfClearance = cookies.find((c: any) => c.name === 'cf_clearance');
+
+        const uaRes: any = await send('Runtime.evaluate', { expression: 'navigator.userAgent' });
+        const userAgent = uaRes?.result?.value || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+        const cookieHeader = cookies.map((c: any) => `${c.name}=${c.value}`).join('; ');
+
+        ws.close();
+        cleanup();
+        clearTimeout(timer);
+
+        if (cfClearance) {
+          console.log('[Clearance] SUCCESS! Harvested cf_clearance cookie.');
+          saveClearance(cookieHeader, userAgent);
+          const data: ClearanceData = { cookieHeader, userAgent, timestamp: Date.now() };
+          resolve(data);
+        } else {
+          console.warn('[Clearance] cf_clearance not found in cookies.');
+          resolve(null);
+        }
+      } catch (err) {
+        cleanup();
+        clearTimeout(timer);
+        resolve(null);
+      }
+    }).catch(() => resolve(null));
+  });
+}
+
 const inFlightTokens = new Map<string, Promise<string | null>>();
 
+/**
+ * High-speed token extractor:
+ * 1. Checks local cache (< 10 min) -> 0ms
+ * 2. Uses cf_clearance cookie via Impit HTTP request -> ~300ms (ZERO BROWSER)
+ * 3. Falls back to harvesting cookie if expired -> 6s once per 6 hours
+ */
 export async function getCinemaosToken(
   type: 'movie' | 'tv',
   tmdbId: string | number,
@@ -80,218 +265,61 @@ export async function getCinemaosToken(
     return inFlightTokens.get(idStr)!;
   }
 
-  // 3. Queue execution sequentially so VPS (1 vCPU) only runs 1 browser at a time
-  const fetchPromise = new Promise<string | null>((resolve) => {
-    tokenQueue = tokenQueue
-      .then(async () => {
-        try {
-          const res = await fetchTokenInternal(type, tmdbId, forceFresh);
-          resolve(res);
-        } catch (err) {
-          console.error(`[TokenFetcher] Error fetching token for ${type}/${idStr}:`, err);
-          resolve(null);
-        } finally {
-          inFlightTokens.delete(idStr);
+  const fetchPromise = (async () => {
+    try {
+      // Try fast HTTP extraction with cf_clearance cookie
+      let clearance = loadClearance();
+      if (!clearance) {
+        clearance = await harvestClearanceCookie();
+      }
+
+      if (clearance) {
+        const client = new Impit({ browser: 'chrome' });
+        const targetUrl = `https://cinemaos.live/watch/${type}/${idStr}`;
+
+        for (let attempt = 0; attempt < 2; attempt++) {
+          if (!clearance) break;
+          try {
+            const currentClearance = clearance;
+            const t0 = Date.now();
+            const res = await client.fetch(targetUrl, {
+              headers: {
+                'Cookie': currentClearance.cookieHeader,
+                'User-Agent': currentClearance.userAgent,
+                'Referer': 'https://cinemaos.live/'
+              },
+              signal: AbortSignal.timeout(6000)
+            });
+
+            const html = await res.text();
+            const dur = Date.now() - t0;
+
+            if (res.status === 200 && !html.includes('Just a moment...')) {
+              const match = html.match(/1792\d{6}\.[a-f0-9]{64}/);
+              if (match) {
+                const token = match[0];
+                console.log(`[TokenFetcher] ⚡ Token extracted in ${dur}ms (0 BROWSER): ${token.substring(0, 20)}...`);
+                saveTokenToCache(idStr, token);
+                return token;
+              }
+            }
+
+            // If 403 challenge, clearance cookie expired, harvest new one once
+            if (attempt === 0 && (res.status === 403 || html.includes('Just a moment...'))) {
+              console.log('[TokenFetcher] Clearance expired. Harvesting fresh cookie...');
+              clearance = await harvestClearanceCookie();
+              if (!clearance) break;
+            }
+          } catch {}
         }
-      })
-      .catch((err) => {
-        console.error('[TokenFetcher] Queue failure:', err);
-        inFlightTokens.delete(idStr);
-        resolve(null);
-      });
-  });
+      }
+
+      return null;
+    } finally {
+      inFlightTokens.delete(idStr);
+    }
+  })();
 
   inFlightTokens.set(idStr, fetchPromise);
   return fetchPromise;
-}
-
-async function fetchTokenInternal(
-  type: 'movie' | 'tv',
-  tmdbId: string | number,
-  forceFresh: boolean = false
-): Promise<string | null> {
-  const idStr = String(tmdbId);
-
-  // Re-check cache in case previous queued job already fetched it
-  if (!forceFresh) {
-    const cache = loadTokensCache();
-    if (cache[idStr] && Date.now() - cache[idStr].timestamp < 10 * 60 * 1000) {
-      return cache[idStr].token;
-    }
-  }
-
-  // Locate Chrome binary
-  const chromePath = getChromePath();
-  if (!chromePath) {
-    console.error('[TokenFetcher] No Chrome binary found on system');
-    return null;
-  }
-
-  // Pick a random debugging port to avoid collision
-  const port = 9300 + Math.floor(Math.random() * 400);
-  const userProfileDir = join(os.tmpdir(), `cinemaos-chrome-${Date.now()}-${port}`);
-  const targetUrl = `https://cinemaos.live/watch/${type}/${idStr}`;
-
-  const isLinux = os.platform() === 'linux';
-  const hasXvfb = isLinux && existsSync('/usr/bin/xvfb-run');
-
-  const baseChromeArgs = [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-blink-features=AutomationControlled',
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-fre',
-    '--disable-search-engine-choice-screen',
-    '--password-store=basic',
-    `--user-data-dir=${userProfileDir}`,
-    `--remote-debugging-port=${port}`,
-  ];
-
-  let spawnCmd = chromePath;
-  let spawnArgs: string[] = [];
-
-  if (hasXvfb) {
-    spawnCmd = '/usr/bin/xvfb-run';
-    spawnArgs = [
-      '--auto-servernum',
-      '--server-args=-screen 0 1920x1080x24',
-      chromePath,
-      ...baseChromeArgs,
-      '--window-size=1920,1080',
-      'about:blank',
-    ];
-  } else if (isLinux) {
-    spawnArgs = [
-      ...baseChromeArgs,
-      '--headless=new',
-      '--disable-gpu',
-      'about:blank',
-    ];
-  } else {
-    spawnArgs = [
-      ...baseChromeArgs,
-      '--window-position=-3200,-3200',
-      '--window-size=800,600',
-      'about:blank',
-    ];
-  }
-
-  console.log(`[TokenFetcher] Spawning Chrome for ${type}/${idStr} on debugging port ${port} (xvfb: ${hasXvfb})...`);
-  const chrome = spawn(spawnCmd, spawnArgs);
-
-  return new Promise<string | null>(async (resolve) => {
-    let resolved = false;
-
-    const cleanup = () => {
-      if (!resolved) {
-        resolved = true;
-        try {
-          chrome.kill('SIGKILL');
-        } catch {}
-        if (chrome.pid && isLinux) {
-          try {
-            spawn('pkill', ['-9', '-P', String(chrome.pid)]);
-          } catch {}
-        }
-        try {
-          rmSync(userProfileDir, { recursive: true, force: true });
-        } catch {}
-      }
-    };
-
-    const timer = setTimeout(() => {
-      console.warn(`[TokenFetcher] Timeout (25s) reached while fetching token for ${type}/${idStr}`);
-      cleanup();
-      resolve(null);
-    }, 25000);
-
-    try {
-      // Wait for Chrome to boot
-      await wait(1200);
-
-      // Connect to CDP
-      let wsUrl: string | null = null;
-      for (let i = 0; i < 30; i++) {
-        try {
-          const res = await fetch(`http://127.0.0.1:${port}/json/list`);
-          const data: any = await res.json();
-          if (Array.isArray(data)) {
-            const pageTarget = data.find((t: any) => t.type === 'page');
-            if (pageTarget?.webSocketDebuggerUrl) {
-              wsUrl = pageTarget.webSocketDebuggerUrl;
-              break;
-            }
-          }
-        } catch {}
-        await wait(250);
-      }
-
-      if (!wsUrl) {
-        console.error(`[TokenFetcher] Failed to find page target on port ${port}`);
-        cleanup();
-        clearTimeout(timer);
-        return resolve(null);
-      }
-
-      console.log(`[TokenFetcher] Connected to CDP page websocket: ${wsUrl}`);
-      const ws = new WebSocket(wsUrl);
-
-      let msgId = 1;
-      const send = (method: string, params: any = {}) => {
-        ws.send(JSON.stringify({ id: msgId++, method, params }));
-      };
-
-      ws.onopen = () => {
-        console.log(`[TokenFetcher] Enabling Network/Runtime & navigating to ${targetUrl}...`);
-        send('Network.enable');
-        send('Page.enable');
-        send('Runtime.enable');
-        send('Page.navigate', { url: targetUrl });
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(String(event.data));
-          if (msg.method === 'Network.responseReceived') {
-            const u = msg.params?.response?.url || '';
-            const status = msg.params?.response?.status;
-            if (u.includes('cinemaos.live/watch/') || u.includes('/api/relay/')) {
-              console.log(`[TokenFetcher] Response received: ${status} for ${u.substring(0, 80)}`);
-            }
-          }
-          if (msg.method === 'Network.requestWillBeSent') {
-            const reqUrl = msg.params?.request?.url || '';
-            if (reqUrl.includes('/api/relay/scrape') || reqUrl.includes('_st=')) {
-              console.log(`[TokenFetcher] Captured relay request: ${reqUrl.substring(0, 100)}...`);
-              const u = new URL(reqUrl);
-              const st = u.searchParams.get('_st');
-              if (st) {
-                console.log(`[TokenFetcher] SUCCESS! Token obtained: ${st.substring(0, 20)}...`);
-                resolved = true;
-                clearTimeout(timer);
-                saveTokenToCache(idStr, st);
-                ws.close();
-                cleanup();
-                resolve(st);
-              }
-            }
-          }
-        } catch {}
-      };
-
-      ws.onerror = (err) => {
-        console.error('[TokenFetcher] WebSocket error:', err);
-        cleanup();
-        clearTimeout(timer);
-        resolve(null);
-      };
-    } catch (err: any) {
-      console.error('[TokenFetcher] Exception:', err.message);
-      cleanup();
-      clearTimeout(timer);
-      resolve(null);
-    }
-  });
 }
