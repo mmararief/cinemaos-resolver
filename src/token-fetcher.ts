@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import os from 'node:os';
 
@@ -82,7 +82,7 @@ export async function getCinemaosToken(
 
   // Pick a random debugging port to avoid collision
   const port = 9300 + Math.floor(Math.random() * 400);
-  const userProfileDir = join(os.homedir(), '.cinemaos-chrome-profile');
+  const userProfileDir = join(os.tmpdir(), `cinemaos-chrome-${Date.now()}-${port}`);
   const targetUrl = `https://cinemaos.live/watch/${type}/${idStr}`;
 
   const isLinux = os.platform() === 'linux';
@@ -123,7 +123,10 @@ export async function getCinemaosToken(
       if (!resolved) {
         resolved = true;
         try {
-          chrome.kill();
+          chrome.kill('SIGKILL');
+        } catch {}
+        try {
+          rmSync(userProfileDir, { recursive: true, force: true });
         } catch {}
       }
     };
@@ -135,6 +138,9 @@ export async function getCinemaosToken(
     }, 25000);
 
     try {
+      // Wait for Chrome to boot
+      await wait(1200);
+
       // Connect to CDP
       let wsUrl: string | null = null;
       for (let i = 0; i < 30; i++) {
@@ -168,15 +174,23 @@ export async function getCinemaosToken(
       };
 
       ws.onopen = () => {
-        console.log(`[TokenFetcher] Enabling Network & navigating to ${targetUrl}...`);
+        console.log(`[TokenFetcher] Enabling Network/Runtime & navigating to ${targetUrl}...`);
         send('Network.enable');
         send('Page.enable');
+        send('Runtime.enable');
         send('Page.navigate', { url: targetUrl });
       };
 
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(String(event.data));
+          if (msg.method === 'Network.responseReceived') {
+            const u = msg.params?.response?.url || '';
+            const status = msg.params?.response?.status;
+            if (u.includes('cinemaos.live/watch/') || u.includes('/api/relay/')) {
+              console.log(`[TokenFetcher] Response received: ${status} for ${u.substring(0, 80)}`);
+            }
+          }
           if (msg.method === 'Network.requestWillBeSent') {
             const reqUrl = msg.params?.request?.url || '';
             if (reqUrl.includes('/api/relay/scrape') || reqUrl.includes('_st=')) {
@@ -189,9 +203,7 @@ export async function getCinemaosToken(
                 clearTimeout(timer);
                 saveTokenToCache(idStr, st);
                 ws.close();
-                try {
-                  chrome.kill();
-                } catch {}
+                cleanup();
                 resolve(st);
               }
             }
